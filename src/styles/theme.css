@@ -1,35 +1,36 @@
 :root {
-  /* Surfaces */
-  --bg-primary: #0a0f0d;
-  --bg-secondary: #111916;
-  --bg-tertiary: #182420;
-  --bg-elevated: #1a2b24;
+  /* Surfaces — Nord dark defaults */
+  --bg-primary: #2e3440;
+  --bg-secondary: #3b4252;
+  --bg-tertiary: #434c5e;
+  --bg-elevated: #4c566a;
 
   /* Borders */
-  --border: #1e3a2f;
-  --border-focus: #2d6b4f;
+  --border: rgba(216, 222, 233, 0.1);
+  --border-focus: #88c0d0;
 
   /* Text */
-  --text-primary: #d4e8dc;
-  --text-secondary: #7a9b8a;
-  --text-tertiary: #4a6b5a;
+  --text-primary: #eceff4;
+  --text-secondary: #d8dee9;
+  --text-tertiary: #7b88a1;
 
   /* Accent */
-  --accent: #3ecf8e;
-  --accent-dim: #2a8f62;
-  --accent-bg: rgba(62, 207, 142, 0.1);
+  --accent: #88c0d0;
+  --accent-dim: #5e81ac;
+  --accent-bg: rgba(136, 192, 208, 0.1);
 
   /* Status */
-  --status-clean: #3ecf8e;
-  --status-dirty: #f0c674;
-  --status-error: #e06c75;
+  --status-clean: #a3be8c;
+  --status-dirty: #ebcb8b;
+  --status-error: #bf616a;
 
   /* Typography */
   --font-ui: -apple-system, BlinkMacSystemFont, "Inter", system-ui, sans-serif;
   --font-mono: "JetBrains Mono", "Fira Code", monospace;
-  --font-size-xs: 11px;
-  --font-size-sm: 12px;
-  --font-size-base: 13px;
+  --ui-scale: 1;
+  --font-size-xs: calc(11px * var(--ui-scale));
+  --font-size-sm: calc(12px * var(--ui-scale));
+  --font-size-base: calc(13px * var(--ui-scale));
 
   /* Spacing (4px base) */
   --space-1: 4px;
@@ -41,8 +42,9 @@
 
   /* Layout */
   --sidebar-width: 260px;
-  --tab-height: 36px;
-  --statusbar-height: 24px;
+  --title-bar-height: 32px;
+  --tab-height: 32px;
+  --statusbar-height: 22px;
   --radius-sm: 4px;
   --radius-md: 6px;
 

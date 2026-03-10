@@ -5,6 +5,7 @@ import { SearchAddon } from "@xterm/addon-search";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { getTerminalTheme } from "./theme";
+import type { ThemeVariant } from "./themes/index";
 import {
   terminalWrite,
   terminalResize,
@@ -176,6 +177,37 @@ class TerminalManager {
 
   has(tabId: string): boolean {
     return this.terminals.has(tabId);
+  }
+
+  updateAllFontSize(size: number): void {
+    for (const [, managed] of this.terminals) {
+      managed.terminal.options.fontSize = size;
+      try { managed.fitAddon.fit(); } catch {}
+    }
+  }
+
+  updateAllFontFamily(family: string): void {
+    for (const [, managed] of this.terminals) {
+      managed.terminal.options.fontFamily = family;
+      try { managed.fitAddon.fit(); } catch {}
+    }
+  }
+
+  updateAllThemes(variant: ThemeVariant): void {
+    const theme = getTerminalTheme(variant.terminal);
+    const bg = variant.colors.bgPrimary;
+    const fg = variant.colors.textPrimary;
+    const cursor = variant.colors.accent;
+    const cursorAccent = variant.colors.bgPrimary;
+    for (const [, managed] of this.terminals) {
+      managed.terminal.options.theme = {
+        ...theme,
+        background: bg,
+        foreground: fg,
+        cursor,
+        cursorAccent,
+      };
+    }
   }
 
   destroyAll(): void {

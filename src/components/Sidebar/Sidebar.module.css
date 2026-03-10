@@ -1,6 +1,7 @@
 .sidebar {
   display: flex;
   flex-direction: column;
+  height: 100%;
   background: var(--bg-secondary);
   border-right: 1px solid var(--border);
   overflow-y: auto;
@@ -8,32 +9,10 @@
   user-select: none;
 }
 
-.header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: var(--space-3) var(--space-4);
-  border-bottom: 1px solid var(--border);
-  height: var(--tab-height);
-}
-
-.title {
-  font-size: var(--font-size-sm);
-  font-weight: 600;
-  color: var(--text-secondary);
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-}
-
 .repoList {
   flex: 1;
   overflow-y: auto;
-  padding: var(--space-2) 0;
-}
-
-.footer {
-  padding: var(--space-2) var(--space-3);
-  border-top: 1px solid var(--border);
+  padding: var(--space-1) 0;
 }
 
 .addButton {
@@ -41,16 +20,37 @@
   align-items: center;
   gap: var(--space-2);
   width: 100%;
-  padding: var(--space-2) var(--space-3);
-  border-radius: var(--radius-sm);
-  color: var(--text-secondary);
+  padding: var(--space-1) var(--space-4);
+  color: var(--text-tertiary);
   font-size: var(--font-size-sm);
   transition: background var(--transition-fast), color var(--transition-fast);
 }
 
 .addButton:hover {
   background: var(--bg-tertiary);
-  color: var(--text-primary);
+  color: var(--text-secondary);
+}
+
+.footer {
+  flex-shrink: 0;
+  border-top: 1px solid var(--border);
+  padding: var(--space-1) 0;
+}
+
+.settingsButton {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  padding: var(--space-1) var(--space-4);
+  color: var(--text-tertiary);
+  font-size: var(--font-size-sm);
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.settingsButton:hover {
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
 }
 
 .resizeHandle {

@@ -17,6 +17,8 @@ pub struct UserConfig {
     pub theme: String,
     #[serde(default = "default_git_poll_interval")]
     pub git_poll_interval_secs: u64,
+    #[serde(default = "default_ui_scale")]
+    pub ui_scale: f64,
 }
 
 fn default_shell() -> String {
@@ -32,10 +34,13 @@ fn default_scrollback_lines() -> u32 {
     10000
 }
 fn default_theme() -> String {
-    "dark".to_string()
+    "nord-dark".to_string()
 }
 fn default_git_poll_interval() -> u64 {
     5
+}
+fn default_ui_scale() -> f64 {
+    1.0
 }
 
 impl Default for UserConfig {
@@ -47,6 +52,7 @@ impl Default for UserConfig {
             scrollback_lines: default_scrollback_lines(),
             theme: default_theme(),
             git_poll_interval_secs: default_git_poll_interval(),
+            ui_scale: default_ui_scale(),
         }
     }
 }
@@ -93,6 +99,9 @@ impl UserConfig {
         if let Some(v) = patch.get("git_poll_interval_secs").and_then(|v| v.as_u64()) {
             self.git_poll_interval_secs = v;
         }
+        if let Some(v) = patch.get("ui_scale").and_then(|v| v.as_f64()) {
+            self.ui_scale = v;
+        }
     }
 }
 
@@ -107,8 +116,9 @@ mod tests {
         let config = UserConfig::default();
         assert_eq!(config.font_size, 14);
         assert_eq!(config.scrollback_lines, 10000);
-        assert_eq!(config.theme, "dark");
+        assert_eq!(config.theme, "nord-dark");
         assert_eq!(config.git_poll_interval_secs, 5);
+        assert!((config.ui_scale - 1.0).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -123,6 +133,7 @@ mod tests {
             scrollback_lines: 5000,
             theme: "dark".to_string(),
             git_poll_interval_secs: 10,
+            ui_scale: 1.2,
         };
 
         let content = toml::to_string_pretty(&config).unwrap();

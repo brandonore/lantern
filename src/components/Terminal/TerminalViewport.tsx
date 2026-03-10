@@ -1,4 +1,5 @@
 import { useState, useCallback } from "react";
+import { useStoreWithEqualityFn } from "zustand/traditional";
 import { useAppStore } from "../../stores/appStore";
 import { TerminalInstance } from "./TerminalInstance";
 import { EmptyState } from "./EmptyState";
@@ -8,7 +9,18 @@ import { SearchBar } from "./SearchBar";
 import styles from "./TerminalViewport.module.css";
 
 export function TerminalViewport() {
-  const repos = useAppStore((s) => s.repos);
+  const repos = useStoreWithEqualityFn(
+    useAppStore,
+    (s) => s.repos,
+    (a, b) => {
+      if (a.length !== b.length) return false;
+      return a.every((repo, i) =>
+        repo.id === b[i].id &&
+        repo.tabs === b[i].tabs &&
+        repo.activeTabId === b[i].activeTabId
+      );
+    }
+  );
   const activeRepoId = useAppStore((s) => s.activeRepoId);
   const [exitedTabs, setExitedTabs] = useState<
     Map<string, number | null>

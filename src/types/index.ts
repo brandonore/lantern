@@ -44,6 +44,7 @@ export interface UserConfig {
   scrollback_lines: number;
   theme: string;
   git_poll_interval_secs: number;
+  ui_scale: number;
 }
 
 export interface ProcessInfo {

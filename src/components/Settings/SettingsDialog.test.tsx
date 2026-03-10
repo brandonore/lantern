@@ -12,6 +12,7 @@ beforeEach(() => {
       scrollback_lines: 10000,
       theme: "dark",
       git_poll_interval_secs: 5,
+      ui_scale: 1,
     },
     settingsOpen: true,
   });
