@@ -1,5 +1,5 @@
 use crate::error::LanternError;
-use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
+use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -17,13 +17,14 @@ pub struct PtyInfo {
 #[derive(Serialize, Clone, Debug)]
 #[serde(tag = "kind")]
 pub enum TerminalOutput {
-    Data { data: Vec<u8> },
+    Data { data: String },
     Exited { code: Option<i32> },
 }
 
 struct PtySession {
     master: Box<dyn MasterPty + Send>,
     writer: Box<dyn Write + Send>,
+    child: Arc<Mutex<Box<dyn Child + Send + Sync>>>,
     pid: u32,
     cols: u16,
     rows: u16,
@@ -63,6 +64,7 @@ impl PtyManager {
 
         let mut cmd = CommandBuilder::new(shell);
         cmd.cwd(cwd);
+        cmd.env("TERM", "xterm-256color");
 
         let child = pair
             .slave
@@ -70,6 +72,9 @@ impl PtyManager {
             .map_err(|e| LanternError::Pty(e.to_string()))?;
 
         let pid = child.process_id().unwrap_or(0);
+        let child = Arc::new(Mutex::new(child));
+        let child_for_reader = child.clone();
+
         let writer = pair
             .master
             .take_writer()
@@ -88,7 +93,6 @@ impl PtyManager {
             .name(format!("pty-reader-{}", session_id))
             .spawn(move || {
                 let mut buf = [0u8; 4096];
-                let mut child = child;
                 loop {
                     if shutdown_clone.load(Ordering::Relaxed) {
                         break;
@@ -96,7 +100,9 @@ impl PtyManager {
                     match reader.read(&mut buf) {
                         Ok(0) => {
                             // EOF — process exited
-                            let code = child
+                            let code = child_for_reader
+                                .lock()
+                                .unwrap()
                                 .try_wait()
                                 .ok()
                                 .flatten()
@@ -106,7 +112,7 @@ impl PtyManager {
                         }
                         Ok(n) => {
                             output_tx(TerminalOutput::Data {
-                                data: buf[..n].to_vec(),
+                                data: String::from_utf8_lossy(&buf[..n]).into_owned(),
                             });
                         }
                         Err(e) => {
@@ -117,7 +123,12 @@ impl PtyManager {
                                 "PTY reader error for session {}: {}",
                                 session_id_clone, e
                             );
-                            let code = child.try_wait().ok().flatten()
+                            let code = child_for_reader
+                                .lock()
+                                .unwrap()
+                                .try_wait()
+                                .ok()
+                                .flatten()
                                 .map(|s| s.exit_code() as i32);
                             output_tx(TerminalOutput::Exited { code });
                             break;
@@ -130,6 +141,7 @@ impl PtyManager {
         let session = PtySession {
             master: pair.master,
             writer,
+            child,
             pid,
             cols,
             rows,
@@ -191,9 +203,11 @@ impl PtyManager {
         let mut sessions = self.sessions.lock().unwrap();
         if let Some(mut session) = sessions.remove(session_id) {
             session.shutdown.store(true, Ordering::Relaxed);
+            // Kill the child process
+            let _ = session.child.lock().unwrap().kill();
             // Drop writer to signal EOF to the PTY
             drop(session.writer);
-            // Wait for reader thread to finish (with timeout)
+            // Wait for reader thread to finish
             if let Some(handle) = session.reader_handle.take() {
                 let _ = handle.join();
             }
@@ -207,6 +221,7 @@ impl PtyManager {
         for id in ids {
             if let Some(mut session) = sessions.remove(&id) {
                 session.shutdown.store(true, Ordering::Relaxed);
+                let _ = session.child.lock().unwrap().kill();
                 drop(session.writer);
                 if let Some(handle) = session.reader_handle.take() {
                     let _ = handle.join();
@@ -245,13 +260,13 @@ mod tests {
     }
 
     fn collect_data(outputs: &[TerminalOutput]) -> String {
-        let mut data = Vec::new();
+        let mut result = String::new();
         for output in outputs {
             if let TerminalOutput::Data { data: d } = output {
-                data.extend_from_slice(d);
+                result.push_str(d);
             }
         }
-        String::from_utf8_lossy(&data).to_string()
+        result
     }
 
     #[test]

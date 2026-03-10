@@ -53,5 +53,5 @@ export interface ProcessInfo {
 }
 
 export type TerminalOutputData =
-  | { kind: "Data"; data: number[] }
+  | { kind: "Data"; data: string }
   | { kind: "Exited"; code: number | null };

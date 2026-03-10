@@ -15,6 +15,8 @@ export function TerminalInstance({ tabId, isVisible, onExit }: Props) {
   useEffect(() => {
     if (!containerRef.current || !config) return;
     if (terminalManager.has(tabId)) return;
+    // Defer creation until the tab is first visible to avoid 0x0 dimensions
+    if (!isVisible) return;
 
     terminalManager.create(
       tabId,
@@ -30,7 +32,7 @@ export function TerminalInstance({ tabId, isVisible, onExit }: Props) {
     return () => {
       // Don't destroy on unmount — we keep terminals alive
     };
-  }, [tabId, config]);
+  }, [tabId, config, isVisible]);
 
   useEffect(() => {
     if (isVisible) {

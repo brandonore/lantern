@@ -17,6 +17,9 @@ interface AppStore {
   sidebarWidth: number;
   config: UserConfig | null;
   settingsOpen: boolean;
+  renamingTabId: string | null;
+  searchOpen: boolean;
+  searchQuery: string;
 
   // Actions
   hydrate: () => Promise<void>;
@@ -35,6 +38,9 @@ interface AppStore {
   setSidebarWidth: (width: number) => void;
   setConfig: (config: UserConfig) => void;
   setSettingsOpen: (open: boolean) => void;
+  setRenamingTabId: (id: string | null) => void;
+  setSearchOpen: (open: boolean) => void;
+  setSearchQuery: (query: string) => void;
 }
 
 export const useAppStore = create<AppStore>()(
@@ -45,6 +51,9 @@ export const useAppStore = create<AppStore>()(
     sidebarWidth: 260,
     config: null,
     settingsOpen: false,
+    renamingTabId: null,
+    searchOpen: false,
+    searchQuery: "",
 
     hydrate: async () => {
       const [repos, config, layout] = await Promise.all([
@@ -103,7 +112,14 @@ export const useAppStore = create<AppStore>()(
 
     addRepo: async (path) => {
       const repo = await cmd.repoAdd(path);
-      const tab = await cmd.terminalCreate(repo.id);
+      const raw: any = await cmd.terminalCreate(repo.id);
+      const tab: TerminalTab = {
+        id: raw.id,
+        repoId: raw.repo_id,
+        name: raw.title,
+        shell: raw.shell,
+        sortOrder: raw.sort_order,
+      };
 
       set((state) => {
         const newRepo: RepoWithState = {
@@ -115,15 +131,7 @@ export const useAppStore = create<AppStore>()(
             ahead: 0,
             behind: 0,
           },
-          tabs: [
-            {
-              id: tab.id,
-              repoId: tab.repo_id,
-              name: tab.title,
-              shell: tab.shell,
-              sortOrder: tab.sort_order,
-            },
-          ],
+          tabs: [tab],
           activeTabId: tab.id,
         };
         state.repos.push(newRepo);
@@ -158,13 +166,13 @@ export const useAppStore = create<AppStore>()(
     },
 
     addTab: async (repoId) => {
-      const session = await cmd.terminalCreate(repoId);
+      const raw: any = await cmd.terminalCreate(repoId);
       const tab: TerminalTab = {
-        id: session.id,
-        repoId: session.repo_id,
-        name: session.title,
-        shell: session.shell,
-        sortOrder: session.sort_order,
+        id: raw.id,
+        repoId: raw.repo_id,
+        name: raw.title,
+        shell: raw.shell,
+        sortOrder: raw.sort_order,
       };
 
       set((state) => {
@@ -256,6 +264,27 @@ export const useAppStore = create<AppStore>()(
     setSettingsOpen: (open) => {
       set((state) => {
         state.settingsOpen = open;
+      });
+    },
+
+    setRenamingTabId: (id) => {
+      set((state) => {
+        state.renamingTabId = id;
+      });
+    },
+
+    setSearchOpen: (open) => {
+      set((state) => {
+        state.searchOpen = open;
+        if (!open) {
+          state.searchQuery = "";
+        }
+      });
+    },
+
+    setSearchQuery: (query) => {
+      set((state) => {
+        state.searchQuery = query;
       });
     },
   }))

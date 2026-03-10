@@ -1,6 +1,7 @@
 use crate::config::UserConfig;
 use crate::error::LanternError;
 use crate::state::AppState;
+use std::sync::atomic::Ordering;
 use tauri::State;
 
 #[tauri::command]
@@ -17,5 +18,9 @@ pub fn config_update(
     let mut config = state.config.lock().unwrap();
     config.merge_patch(patch);
     config.save()?;
+    // Update live git poll interval
+    state
+        .git_poll_interval
+        .store(config.git_poll_interval_secs, Ordering::Relaxed);
     Ok(config.clone())
 }

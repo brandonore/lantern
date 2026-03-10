@@ -84,14 +84,44 @@ export function useShortcuts() {
       // Ctrl+Shift+F — search in terminal
       if (e.ctrlKey && e.shiftKey && e.key === "F") {
         e.preventDefault();
-        // TODO: open search bar
+        state.setSearchOpen(!state.searchOpen);
         return;
       }
 
-      // F2 — rename tab
+      // Ctrl+Shift+C — copy terminal selection
+      if (e.ctrlKey && e.shiftKey && e.key === "C") {
+        e.preventDefault();
+        if (activeRepo?.activeTabId) {
+          const terminal = terminalManager.getTerminal(activeRepo.activeTabId);
+          const selection = terminal?.getSelection();
+          if (selection) {
+            navigator.clipboard.writeText(selection).catch(console.error);
+          }
+        }
+        return;
+      }
+
+      // Ctrl+Shift+V — paste into terminal
+      if (e.ctrlKey && e.shiftKey && e.key === "V") {
+        e.preventDefault();
+        if (activeRepo?.activeTabId) {
+          const terminal = terminalManager.getTerminal(activeRepo.activeTabId);
+          if (terminal) {
+            navigator.clipboard
+              .readText()
+              .then((text) => terminal.paste(text))
+              .catch(console.error);
+          }
+        }
+        return;
+      }
+
+      // F2 — rename active tab
       if (e.key === "F2") {
         e.preventDefault();
-        // Handled by Tab component
+        if (activeRepo?.activeTabId) {
+          state.setRenamingTabId(activeRepo.activeTabId);
+        }
         return;
       }
     };

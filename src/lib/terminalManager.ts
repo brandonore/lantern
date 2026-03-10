@@ -113,7 +113,7 @@ class TerminalManager {
     try {
       await terminalSubscribe(tabId, (output: TerminalOutputData) => {
         if (output.kind === "Data") {
-          terminal.write(new Uint8Array(output.data));
+          terminal.write(output.data);
         } else if (output.kind === "Exited") {
           onExit?.(output.code);
         }

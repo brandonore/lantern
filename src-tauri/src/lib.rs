@@ -8,7 +8,8 @@ pub mod pty;
 pub mod state;
 
 use state::AppState;
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use tauri::{Emitter, Manager};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -17,14 +18,23 @@ pub fn run() {
     let db = db::init_db(None).expect("Failed to initialize database");
     let pty_manager = pty::PtyManager::new();
 
+    // Load existing layout for initial state
+    let saved_layout = db::load_layout(&db).ok().flatten();
+    let initial_sidebar_width = saved_layout.as_ref().map(|l| l.sidebar_width).unwrap_or(250);
+    let initial_active_repo = saved_layout.as_ref().and_then(|l| l.active_repo_id.clone());
+
+    let git_poll_interval = Arc::new(AtomicU64::new(user_config.git_poll_interval_secs));
+
     let app_state = AppState {
         pty_manager,
         db: db.clone(),
         config: Mutex::new(user_config.clone()),
+        sidebar_width: Mutex::new(initial_sidebar_width),
+        active_repo_id: Mutex::new(initial_active_repo),
+        git_poll_interval: git_poll_interval.clone(),
     };
 
     // Start git polling thread
-    let git_poll_interval = user_config.git_poll_interval_secs;
     let db_for_git = db.clone();
 
     tauri::Builder::default()
@@ -55,11 +65,18 @@ pub fn run() {
         .setup(move |app| {
             let handle = app.handle().clone();
             // Start git polling in background
+            let poll_interval = git_poll_interval.clone();
             std::thread::Builder::new()
                 .name("git-poller".to_string())
                 .spawn(move || {
                     loop {
-                        std::thread::sleep(std::time::Duration::from_secs(git_poll_interval));
+                        let interval = poll_interval.load(Ordering::Relaxed);
+                        if interval == 0 {
+                            // Polling disabled, sleep and check again
+                            std::thread::sleep(std::time::Duration::from_secs(1));
+                            continue;
+                        }
+                        std::thread::sleep(std::time::Duration::from_secs(interval));
                         let repos = match db::list_repos(&db_for_git) {
                             Ok(r) => r,
                             Err(_) => continue,
@@ -77,18 +94,20 @@ pub fn run() {
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { .. } = event {
                 let state: tauri::State<AppState> = window.state();
-                // Save layout
+                // Save layout with actual sidebar width and active repo
                 if let Ok(pos) = window.outer_position() {
                     if let Ok(size) = window.outer_size() {
                         let maximized = window.is_maximized().unwrap_or(false);
+                        let sidebar_width = *state.sidebar_width.lock().unwrap();
+                        let active_repo_id = state.active_repo_id.lock().unwrap().clone();
                         let layout = db::AppLayout {
                             window_x: Some(pos.x),
                             window_y: Some(pos.y),
                             window_width: size.width as i32,
                             window_height: size.height as i32,
                             window_maximized: maximized,
-                            sidebar_width: 250,
-                            active_repo_id: None,
+                            sidebar_width,
+                            active_repo_id,
                         };
                         let _ = db::save_layout(&state.db, &layout);
                     }

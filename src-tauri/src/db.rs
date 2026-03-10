@@ -93,6 +93,11 @@ fn create_tables(conn: &Connection) -> Result<(), LanternError> {
             repo_id TEXT PRIMARY KEY REFERENCES repo(id) ON DELETE CASCADE,
             session_id TEXT NOT NULL REFERENCES terminal_session(id) ON DELETE CASCADE
         );
+
+        CREATE TABLE IF NOT EXISTS schema_version (
+            version INTEGER PRIMARY KEY
+        );
+        INSERT OR IGNORE INTO schema_version VALUES (1);
         ",
     )?;
     Ok(())
@@ -363,6 +368,7 @@ mod tests {
         assert!(tables.contains(&"terminal_session".to_string()));
         assert!(tables.contains(&"app_state".to_string()));
         assert!(tables.contains(&"active_tab".to_string()));
+        assert!(tables.contains(&"schema_version".to_string()));
     }
 
     #[test]

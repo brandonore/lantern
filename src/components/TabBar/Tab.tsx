@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import type { TerminalTab } from "../../types";
+import { useAppStore } from "../../stores/appStore";
 import styles from "./Tab.module.css";
 
 interface Props {
@@ -14,6 +15,17 @@ export function Tab({ tab, isActive, onClick, onClose, onRename }: Props) {
   const [editing, setEditing] = useState(false);
   const [editValue, setEditValue] = useState(tab.name);
   const inputRef = useRef<HTMLInputElement>(null);
+  const renamingTabId = useAppStore((s) => s.renamingTabId);
+  const setRenamingTabId = useAppStore((s) => s.setRenamingTabId);
+
+  // Enter edit mode when F2 targets this tab
+  useEffect(() => {
+    if (renamingTabId === tab.id) {
+      setEditValue(tab.name);
+      setEditing(true);
+      setRenamingTabId(null);
+    }
+  }, [renamingTabId, tab.id, tab.name, setRenamingTabId]);
 
   useEffect(() => {
     if (editing && inputRef.current) {

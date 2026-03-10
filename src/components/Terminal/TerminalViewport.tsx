@@ -3,6 +3,8 @@ import { useAppStore } from "../../stores/appStore";
 import { TerminalInstance } from "./TerminalInstance";
 import { EmptyState } from "./EmptyState";
 import { terminalManager } from "../../lib/terminalManager";
+import { terminalClose, terminalCreate, terminalSetActive } from "../../lib/tauriCommands";
+import { SearchBar } from "./SearchBar";
 import styles from "./TerminalViewport.module.css";
 
 export function TerminalViewport() {
@@ -22,15 +24,44 @@ export function TerminalViewport() {
   );
 
   const handleRestart = useCallback(
-    async (tabId: string) => {
-      // Destroy the old terminal and remove exit status
+    async (tabId: string, repoId: string) => {
+      // Destroy JS terminal
       terminalManager.destroy(tabId);
       setExitedTabs((prev) => {
         const next = new Map(prev);
         next.delete(tabId);
         return next;
       });
-      // The TerminalInstance effect will re-create it
+      // Close the Rust PTY session + DB record
+      try {
+        await terminalClose(tabId);
+      } catch {
+        // May already be closed
+      }
+      // Create a fresh session
+      const newSession: any = await terminalCreate(repoId);
+      const newId = newSession.id;
+      await terminalSetActive(repoId, newId);
+      // Update the store: replace the old tab with the new one
+      useAppStore.setState((s) => {
+        const repo = s.repos.find((r) => r.id === repoId);
+        if (repo) {
+          const idx = repo.tabs.findIndex((t) => t.id === tabId);
+          const newTab = {
+            id: newId,
+            repoId: newSession.repo_id ?? repoId,
+            name: newSession.title ?? `Terminal`,
+            shell: newSession.shell ?? null,
+            sortOrder: newSession.sort_order ?? 0,
+          };
+          if (idx >= 0) {
+            repo.tabs[idx] = newTab;
+          } else {
+            repo.tabs.push(newTab);
+          }
+          repo.activeTabId = newId;
+        }
+      });
     },
     []
   );
@@ -41,6 +72,7 @@ export function TerminalViewport() {
 
   return (
     <div className={styles.viewport}>
+      <SearchBar />
       {repos.flatMap((repo) =>
         repo.tabs.map((tab) => {
           const isVisible =
@@ -65,7 +97,7 @@ export function TerminalViewport() {
                   </span>
                   <button
                     className={styles.restartButton}
-                    onClick={() => handleRestart(tab.id)}
+                    onClick={() => handleRestart(tab.id, repo.id)}
                   >
                     Restart
                   </button>
