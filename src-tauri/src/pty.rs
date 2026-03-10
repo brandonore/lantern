@@ -173,10 +173,6 @@ impl PtyManager {
             .writer
             .write_all(data)
             .map_err(|e| LanternError::Pty(e.to_string()))?;
-        session
-            .writer
-            .flush()
-            .map_err(|e| LanternError::Pty(e.to_string()))?;
         Ok(())
     }
 

@@ -3,6 +3,8 @@ export interface Repo {
   path: string;
   name: string;
   sortOrder: number;
+  groupId: string | null;
+  isDefault: boolean;
 }
 
 export interface TerminalTab {
@@ -34,7 +36,9 @@ export interface AppLayout {
   window_height: number;
   window_maximized: boolean;
   sidebar_width: number;
+  sidebar_collapsed: boolean;
   active_repo_id: string | null;
+  collapsed_group_ids: string[];
 }
 
 export interface UserConfig {
@@ -51,6 +55,26 @@ export interface ProcessInfo {
   name: string;
   is_agent: boolean;
   agent_label: string | null;
+}
+
+export interface WorktreeEntry {
+  name: string;
+  path: string;
+  branch: string | null;
+  is_main: boolean;
+}
+
+export interface WorktreeInfo {
+  is_worktree: boolean;
+  repo_name: string;
+  entries: WorktreeEntry[];
+}
+
+export interface RepoGroup {
+  groupId: string;
+  name: string;
+  repos: RepoWithState[];
+  isWorktreeGroup: boolean;
 }
 
 export type TerminalOutputData =

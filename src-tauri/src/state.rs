@@ -9,6 +9,8 @@ pub struct AppState {
     pub db: DbConn,
     pub config: Mutex<UserConfig>,
     pub sidebar_width: Mutex<i32>,
+    pub sidebar_collapsed: Mutex<bool>,
     pub active_repo_id: Mutex<Option<String>>,
+    pub collapsed_group_ids: Mutex<Vec<String>>,
     pub git_poll_interval: Arc<AtomicU64>,
 }

@@ -10,7 +10,9 @@ pub fn state_save_layout(
 ) -> Result<(), LanternError> {
     // Keep AppState in sync so the window close handler has current values
     *state.sidebar_width.lock().unwrap() = layout.sidebar_width;
+    *state.sidebar_collapsed.lock().unwrap() = layout.sidebar_collapsed;
     *state.active_repo_id.lock().unwrap() = layout.active_repo_id.clone();
+    *state.collapsed_group_ids.lock().unwrap() = layout.collapsed_group_ids.clone();
     db::save_layout(&state.db, &layout)
 }
 

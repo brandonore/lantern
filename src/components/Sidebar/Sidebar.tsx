@@ -1,41 +1,67 @@
-import { useCallback } from "react";
+import { useCallback, useState } from "react";
 import { useAppStore } from "../../stores/appStore";
-import { RepoItem } from "./RepoItem";
+import { useRepoGroups } from "../../hooks/useRepoGroups";
+import { RepoGroup } from "./RepoGroup";
 import { SidebarResizeHandle } from "./SidebarResizeHandle";
+import * as cmd from "../../lib/tauriCommands";
 import styles from "./Sidebar.module.css";
+import type { WorktreeInfo } from "../../types";
 
 export function Sidebar() {
-  const repos = useAppStore((s) => s.repos);
-  const activeRepoId = useAppStore((s) => s.activeRepoId);
-  const setActiveRepo = useAppStore((s) => s.setActiveRepo);
+  const groups = useRepoGroups();
   const addRepo = useAppStore((s) => s.addRepo);
-  const removeRepo = useAppStore((s) => s.removeRepo);
+  const addRepoWithWorktrees = useAppStore((s) => s.addRepoWithWorktrees);
   const sidebarWidth = useAppStore((s) => s.sidebarWidth);
   const setSettingsOpen = useAppStore((s) => s.setSettingsOpen);
+  const [worktreePrompt, setWorktreePrompt] = useState<{
+    info: WorktreeInfo;
+    path: string;
+  } | null>(null);
 
   const handleAddRepo = useCallback(async () => {
     try {
       const { open } = await import("@tauri-apps/plugin-dialog");
       const selected = await open({ directory: true, multiple: false });
-      if (selected) {
-        await addRepo(selected as string);
+      if (!selected) return;
+      const path = selected as string;
+
+      // Detect worktrees before adding
+      const wtInfo = await cmd.repoDetectWorktrees(path);
+      if (wtInfo && wtInfo.entries.length > 1) {
+        setWorktreePrompt({ info: wtInfo, path });
+      } else {
+        await addRepo(path);
       }
     } catch (e) {
       console.error("Failed to add repo:", e);
     }
   }, [addRepo]);
 
+  const handleWorktreeAddAll = useCallback(async () => {
+    if (!worktreePrompt) return;
+    try {
+      await addRepoWithWorktrees(worktreePrompt.path);
+    } catch (e) {
+      console.error("Failed to add worktrees:", e);
+    }
+    setWorktreePrompt(null);
+  }, [worktreePrompt, addRepoWithWorktrees]);
+
+  const handleWorktreeAddOne = useCallback(async () => {
+    if (!worktreePrompt) return;
+    try {
+      await addRepo(worktreePrompt.path);
+    } catch (e) {
+      console.error("Failed to add repo:", e);
+    }
+    setWorktreePrompt(null);
+  }, [worktreePrompt, addRepo]);
+
   return (
     <div className={styles.sidebar} style={{ width: sidebarWidth }}>
       <div className={styles.repoList}>
-        {repos.map((repo) => (
-          <RepoItem
-            key={repo.id}
-            repo={repo}
-            isActive={repo.id === activeRepoId}
-            onClick={() => setActiveRepo(repo.id)}
-            onRemove={() => removeRepo(repo.id)}
-          />
+        {groups.map((group) => (
+          <RepoGroup key={group.groupId} group={group} />
         ))}
         <button className={styles.addButton} onClick={handleAddRepo}>
           + Add repository
@@ -54,6 +80,44 @@ export function Sidebar() {
         </button>
       </div>
       <SidebarResizeHandle />
+
+      {worktreePrompt && (
+        <div className={styles.worktreeDialog}>
+          <div className={styles.worktreeDialogContent}>
+            <p className={styles.worktreeDialogTitle}>
+              Worktrees detected for {worktreePrompt.info.repo_name}
+            </p>
+            <ul className={styles.worktreeList}>
+              {worktreePrompt.info.entries.map((entry) => (
+                <li key={entry.path}>
+                  {entry.branch ?? entry.name}
+                  {entry.is_main && " (main)"}
+                </li>
+              ))}
+            </ul>
+            <div className={styles.worktreeDialogActions}>
+              <button
+                className={styles.worktreeDialogBtn}
+                onClick={handleWorktreeAddAll}
+              >
+                Add all
+              </button>
+              <button
+                className={styles.worktreeDialogBtn}
+                onClick={handleWorktreeAddOne}
+              >
+                Add only this one
+              </button>
+              <button
+                className={styles.worktreeDialogBtnCancel}
+                onClick={() => setWorktreePrompt(null)}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

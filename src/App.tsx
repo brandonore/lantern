@@ -16,7 +16,7 @@ export function App() {
   // Save layout on window close
   useEffect(() => {
     const unlisten = getCurrentWindow().onCloseRequested(async () => {
-      const { sidebarWidth, activeRepoId } = useAppStore.getState();
+      const { sidebarWidth, sidebarCollapsed, activeRepoId, collapsedGroupIds } = useAppStore.getState();
       const win = getCurrentWindow();
       try {
         const factor = await win.scaleFactor();
@@ -30,7 +30,9 @@ export function App() {
           window_height: Math.round(size.height / factor),
           window_maximized: maximized,
           sidebar_width: sidebarWidth,
+          sidebar_collapsed: sidebarCollapsed,
           active_repo_id: activeRepoId,
+          collapsed_group_ids: collapsedGroupIds,
         });
       } catch {
         // Best-effort save

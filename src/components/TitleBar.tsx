@@ -1,9 +1,14 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { useAppStore } from "../stores/appStore";
 import styles from "./TitleBar.module.css";
 
 const appWindow = getCurrentWindow();
 
 export function TitleBar() {
+  const sidebarCollapsed = useAppStore((s) => s.sidebarCollapsed);
+  const toggleSidebar = useAppStore((s) => s.toggleSidebar);
+  const sidebarLabel = sidebarCollapsed ? "Show sidebar" : "Hide sidebar";
+
   const handleDragStart = (e: React.MouseEvent) => {
     // Only drag on left-click directly on the title bar (not buttons)
     if (e.button === 0) {
@@ -13,7 +18,26 @@ export function TitleBar() {
 
   return (
     <div className={styles.titleBar} onMouseDown={handleDragStart}>
-      <span className={styles.title}>Lantern</span>
+      <div className={styles.titleSection}>
+        <button
+          className={styles.sidebarButton}
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={toggleSidebar}
+          aria-label={sidebarLabel}
+          title={sidebarLabel}
+        >
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+            <rect x="1.5" y="2" width="11" height="10" rx="1.5" stroke="currentColor" />
+            <path d="M4.5 2.5V11.5" stroke="currentColor" />
+            {sidebarCollapsed ? (
+              <path d="M6 7H9.5M8 5.5L9.5 7L8 8.5" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" />
+            ) : (
+              <path d="M9 7H5.5M7 5.5L5.5 7L7 8.5" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" />
+            )}
+          </svg>
+        </button>
+        <span className={styles.title}>Lantern</span>
+      </div>
       <div
         className={styles.controls}
         onMouseDown={(e) => e.stopPropagation()}

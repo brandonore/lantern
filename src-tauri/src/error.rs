@@ -31,6 +31,9 @@ pub enum LanternError {
 
     #[error("Serialization error: {0}")]
     Serde(#[from] serde_json::Error),
+
+    #[error("Invalid input: {0}")]
+    InvalidInput(String),
 }
 
 impl Serialize for LanternError {

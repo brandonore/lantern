@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { useStoreWithEqualityFn } from "zustand/traditional";
 import { useAppStore } from "../../stores/appStore";
 import { TerminalInstance } from "./TerminalInstance";
@@ -27,6 +27,15 @@ export function TerminalViewport() {
   >(new Map());
 
   const activeRepo = repos.find((r) => r.id === activeRepoId);
+  const activeTabId = activeRepo?.activeTabId ?? null;
+
+  useEffect(() => {
+    terminalManager.setActiveTab(activeTabId);
+
+    return () => {
+      terminalManager.setActiveTab(null);
+    };
+  }, [activeTabId]);
 
   const handleExit = useCallback(
     (tabId: string, code: number | null) => {

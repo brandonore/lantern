@@ -26,6 +26,8 @@ beforeEach(() => {
         name: "my-repo",
         path: "/home/user/my-repo",
         sortOrder: 0,
+        groupId: null,
+        isDefault: false,
         gitInfo: {
           branch: "main",
           is_dirty: false,

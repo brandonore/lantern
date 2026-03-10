@@ -21,7 +21,15 @@ pub fn run() {
     // Load existing layout for initial state
     let saved_layout = db::load_layout(&db).ok().flatten();
     let initial_sidebar_width = saved_layout.as_ref().map(|l| l.sidebar_width).unwrap_or(250);
+    let initial_sidebar_collapsed = saved_layout
+        .as_ref()
+        .map(|l| l.sidebar_collapsed)
+        .unwrap_or(false);
     let initial_active_repo = saved_layout.as_ref().and_then(|l| l.active_repo_id.clone());
+    let initial_collapsed_groups = saved_layout
+        .as_ref()
+        .map(|l| l.collapsed_group_ids.clone())
+        .unwrap_or_default();
 
     let git_poll_interval = Arc::new(AtomicU64::new(user_config.git_poll_interval_secs));
 
@@ -30,7 +38,9 @@ pub fn run() {
         db: db.clone(),
         config: Mutex::new(user_config.clone()),
         sidebar_width: Mutex::new(initial_sidebar_width),
+        sidebar_collapsed: Mutex::new(initial_sidebar_collapsed),
         active_repo_id: Mutex::new(initial_active_repo),
+        collapsed_group_ids: Mutex::new(initial_collapsed_groups),
         git_poll_interval: git_poll_interval.clone(),
     };
 
@@ -47,6 +57,8 @@ pub fn run() {
             commands::repo::repo_list,
             commands::repo::repo_reorder,
             commands::repo::repo_get_all_git_info,
+            commands::repo::repo_detect_worktrees,
+            commands::repo::repo_add_with_worktrees,
             commands::terminal::terminal_create,
             commands::terminal::terminal_list,
             commands::terminal::terminal_close,
@@ -54,6 +66,7 @@ pub fn run() {
             commands::terminal::terminal_set_active,
             commands::terminal::terminal_get_active,
             commands::pty_io::terminal_write,
+            commands::pty_io::terminal_write_raw,
             commands::pty_io::terminal_resize,
             commands::pty_io::terminal_subscribe,
             commands::pty_io::terminal_get_foreground_process,
@@ -99,7 +112,9 @@ pub fn run() {
                     if let Ok(size) = window.outer_size() {
                         let maximized = window.is_maximized().unwrap_or(false);
                         let sidebar_width = *state.sidebar_width.lock().unwrap();
+                        let sidebar_collapsed = *state.sidebar_collapsed.lock().unwrap();
                         let active_repo_id = state.active_repo_id.lock().unwrap().clone();
+                        let collapsed_group_ids = state.collapsed_group_ids.lock().unwrap().clone();
                         let layout = db::AppLayout {
                             window_x: Some(pos.x),
                             window_y: Some(pos.y),
@@ -107,7 +122,9 @@ pub fn run() {
                             window_height: size.height as i32,
                             window_maximized: maximized,
                             sidebar_width,
+                            sidebar_collapsed,
                             active_repo_id,
+                            collapsed_group_ids,
                         };
                         let _ = db::save_layout(&state.db, &layout);
                     }

@@ -20,10 +20,12 @@ interface AppStore {
   renamingTabId: string | null;
   searchOpen: boolean;
   searchQuery: string;
+  collapsedGroupIds: string[];
 
   // Actions
   hydrate: () => Promise<void>;
   addRepo: (path: string) => Promise<void>;
+  addRepoWithWorktrees: (path: string) => Promise<void>;
   removeRepo: (id: string) => Promise<void>;
   setActiveRepo: (id: string) => void;
   reorderRepos: (ids: string[]) => Promise<void>;
@@ -41,6 +43,7 @@ interface AppStore {
   setRenamingTabId: (id: string | null) => void;
   setSearchOpen: (open: boolean) => void;
   setSearchQuery: (query: string) => void;
+  toggleGroupCollapsed: (groupId: string) => void;
 }
 
 export const useAppStore = create<AppStore>()(
@@ -54,6 +57,7 @@ export const useAppStore = create<AppStore>()(
     renamingTabId: null,
     searchOpen: false,
     searchQuery: "",
+    collapsedGroupIds: [] as string[],
 
     hydrate: async () => {
       const [repos, config, layout] = await Promise.all([
@@ -64,11 +68,16 @@ export const useAppStore = create<AppStore>()(
 
       // Load tabs and active tab for each repo
       const reposWithState: RepoWithState[] = await Promise.all(
-        repos.map(async (repo: Repo) => {
+        repos.map(async (repo: any) => {
           const tabs = await cmd.terminalList(repo.id);
           const activeTabId = await cmd.terminalGetActive(repo.id);
           return {
-            ...repo,
+            id: repo.id,
+            name: repo.name,
+            path: repo.path,
+            sortOrder: repo.sort_order ?? repo.sortOrder ?? 0,
+            groupId: repo.group_id ?? repo.groupId ?? null,
+            isDefault: repo.is_default ?? repo.isDefault ?? false,
             gitInfo: {
               branch: null,
               is_dirty: false,
@@ -93,7 +102,11 @@ export const useAppStore = create<AppStore>()(
         state.config = config;
         if (layout) {
           state.sidebarWidth = layout.sidebar_width;
+          state.sidebarCollapsed = layout.sidebar_collapsed;
           state.activeRepoId = layout.active_repo_id;
+          if (layout.collapsed_group_ids) {
+            state.collapsedGroupIds = layout.collapsed_group_ids;
+          }
         }
         // Default to first repo if no active repo
         if (!state.activeRepoId && reposWithState.length > 0) {
@@ -111,14 +124,22 @@ export const useAppStore = create<AppStore>()(
     },
 
     addRepo: async (path) => {
-      const repo = await cmd.repoAdd(path);
-      const raw: any = await cmd.terminalCreate(repo.id);
-      const tab: TerminalTab = {
+      const raw: any = await cmd.repoAdd(path);
+      const repo: Repo = {
         id: raw.id,
-        repoId: raw.repo_id,
-        name: raw.title,
-        shell: raw.shell,
-        sortOrder: raw.sort_order,
+        name: raw.name,
+        path: raw.path,
+        sortOrder: raw.sort_order ?? 0,
+        groupId: raw.group_id ?? null,
+        isDefault: raw.is_default ?? false,
+      };
+      const rawTab: any = await cmd.terminalCreate(repo.id);
+      const tab: TerminalTab = {
+        id: rawTab.id,
+        repoId: rawTab.repo_id,
+        name: rawTab.title,
+        shell: rawTab.shell,
+        sortOrder: rawTab.sort_order,
       };
 
       set((state) => {
@@ -139,6 +160,47 @@ export const useAppStore = create<AppStore>()(
       });
 
       await cmd.terminalSetActive(repo.id, tab.id);
+    },
+
+    addRepoWithWorktrees: async (path) => {
+      const rawRepos: any[] = await cmd.repoAddWithWorktrees(path);
+      const newRepos: RepoWithState[] = [];
+
+      for (const raw of rawRepos) {
+        const rawTab: any = await cmd.terminalCreate(raw.id);
+        const tab: TerminalTab = {
+          id: rawTab.id,
+          repoId: rawTab.repo_id,
+          name: rawTab.title,
+          shell: rawTab.shell,
+          sortOrder: rawTab.sort_order,
+        };
+        await cmd.terminalSetActive(raw.id, tab.id);
+        newRepos.push({
+          id: raw.id,
+          name: raw.name,
+          path: raw.path,
+          sortOrder: raw.sort_order ?? 0,
+          groupId: raw.group_id ?? null,
+          isDefault: raw.is_default ?? false,
+          gitInfo: {
+            branch: null,
+            is_dirty: false,
+            detached: false,
+            ahead: 0,
+            behind: 0,
+          },
+          tabs: [tab],
+          activeTabId: tab.id,
+        });
+      }
+
+      set((state) => {
+        state.repos.push(...newRepos);
+        if (newRepos.length > 0) {
+          state.activeRepoId = newRepos[0].id;
+        }
+      });
     },
 
     removeRepo: async (id) => {
@@ -285,6 +347,17 @@ export const useAppStore = create<AppStore>()(
     setSearchQuery: (query) => {
       set((state) => {
         state.searchQuery = query;
+      });
+    },
+
+    toggleGroupCollapsed: (groupId) => {
+      set((state) => {
+        const idx = state.collapsedGroupIds.indexOf(groupId);
+        if (idx >= 0) {
+          state.collapsedGroupIds.splice(idx, 1);
+        } else {
+          state.collapsedGroupIds.push(groupId);
+        }
       });
     },
   }))

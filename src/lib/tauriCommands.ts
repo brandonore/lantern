@@ -7,7 +7,12 @@ import type {
   UserConfig,
   ProcessInfo,
   TerminalOutputData,
+  WorktreeInfo,
 } from "../types";
+
+const TERMINAL_WRITE_CONTENT_TYPE = "application/octet-stream";
+const TERMINAL_SESSION_HEADER = "x-lantern-session-id";
+const TERMINAL_INPUT_SEQ_HEADER = "x-lantern-input-seq";
 
 // ── Repo ──
 
@@ -29,6 +34,16 @@ export async function repoReorder(ids: string[]): Promise<void> {
 
 export async function repoGetAllGitInfo(): Promise<[string, GitInfo][]> {
   return invoke("repo_get_all_git_info");
+}
+
+export async function repoDetectWorktrees(
+  path: string
+): Promise<WorktreeInfo | null> {
+  return invoke("repo_detect_worktrees", { path });
+}
+
+export async function repoAddWithWorktrees(path: string): Promise<Repo[]> {
+  return invoke("repo_add_with_worktrees", { path });
 }
 
 // ── Terminal ──
@@ -69,9 +84,19 @@ export async function terminalGetActive(
 
 export async function terminalWrite(
   sessionId: string,
-  data: number[]
+  data: Uint8Array,
+  seq?: number
 ): Promise<void> {
-  return invoke("terminal_write", { sessionId, data });
+  const headers: Record<string, string> = {
+    "content-type": TERMINAL_WRITE_CONTENT_TYPE,
+    [TERMINAL_SESSION_HEADER]: sessionId,
+  };
+
+  if (seq !== undefined) {
+    headers[TERMINAL_INPUT_SEQ_HEADER] = `${seq}`;
+  }
+
+  return invoke("terminal_write_raw", data, { headers });
 }
 
 export async function terminalResize(

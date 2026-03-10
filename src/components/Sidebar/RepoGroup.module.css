@@ -1,0 +1,38 @@
+.group + .group {
+  border-top: 1px solid var(--bg-tertiary);
+}
+
+.groupHeader {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  width: 100%;
+  font-size: var(--font-size-xs);
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: var(--space-2) var(--space-4) var(--space-1);
+  cursor: pointer;
+  user-select: none;
+  transition: color var(--transition-fast);
+}
+
+.groupHeader:hover {
+  color: var(--text-secondary);
+}
+
+.group:first-child .groupHeader {
+  padding-top: var(--space-1);
+}
+
+.chevron {
+  display: inline-block;
+  font-size: var(--font-size-sm);
+  line-height: 1;
+  transition: transform var(--transition-fast);
+  transform: rotate(90deg);
+}
+
+.chevronCollapsed {
+  transform: rotate(0deg);
+}

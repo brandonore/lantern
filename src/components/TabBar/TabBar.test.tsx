@@ -9,6 +9,8 @@ const makeRepo = (overrides: Partial<RepoWithState> = {}): RepoWithState => ({
   name: "my-repo",
   path: "/tmp",
   sortOrder: 0,
+  groupId: null,
+  isDefault: false,
   gitInfo: {
     branch: "main",
     is_dirty: false,
