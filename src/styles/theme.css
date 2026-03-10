@@ -1,0 +1,52 @@
+:root {
+  /* Surfaces */
+  --bg-primary: #0a0f0d;
+  --bg-secondary: #111916;
+  --bg-tertiary: #182420;
+  --bg-elevated: #1a2b24;
+
+  /* Borders */
+  --border: #1e3a2f;
+  --border-focus: #2d6b4f;
+
+  /* Text */
+  --text-primary: #d4e8dc;
+  --text-secondary: #7a9b8a;
+  --text-tertiary: #4a6b5a;
+
+  /* Accent */
+  --accent: #3ecf8e;
+  --accent-dim: #2a8f62;
+  --accent-bg: rgba(62, 207, 142, 0.1);
+
+  /* Status */
+  --status-clean: #3ecf8e;
+  --status-dirty: #f0c674;
+  --status-error: #e06c75;
+
+  /* Typography */
+  --font-ui: -apple-system, BlinkMacSystemFont, "Inter", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", "Fira Code", monospace;
+  --font-size-xs: 11px;
+  --font-size-sm: 12px;
+  --font-size-base: 13px;
+
+  /* Spacing (4px base) */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+  --space-8: 32px;
+
+  /* Layout */
+  --sidebar-width: 260px;
+  --tab-height: 36px;
+  --statusbar-height: 24px;
+  --radius-sm: 4px;
+  --radius-md: 6px;
+
+  /* Transitions */
+  --transition-fast: 120ms ease;
+  --transition-normal: 200ms ease;
+}

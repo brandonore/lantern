@@ -1,0 +1,34 @@
+.tabBar {
+  display: flex;
+  align-items: center;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border);
+  height: var(--tab-height);
+  padding: 0 var(--space-2);
+  gap: 1px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  user-select: none;
+}
+
+.tabBar::-webkit-scrollbar {
+  height: 0;
+}
+
+.newTabButton {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  font-size: 16px;
+  flex-shrink: 0;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.newTabButton:hover {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}

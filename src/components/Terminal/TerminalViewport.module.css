@@ -1,0 +1,49 @@
+.viewport {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+}
+
+.terminalWrapper {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+}
+
+.hidden {
+  display: none;
+}
+
+.exitOverlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-4);
+  background: rgba(10, 15, 13, 0.9);
+  color: var(--text-secondary);
+  font-size: var(--font-size-base);
+  z-index: 5;
+}
+
+.restartButton {
+  padding: var(--space-2) var(--space-4);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  color: var(--text-primary);
+  font-size: var(--font-size-sm);
+  transition: background var(--transition-fast), border-color var(--transition-fast);
+}
+
+.restartButton:hover {
+  background: var(--bg-tertiary);
+  border-color: var(--border-focus);
+}
