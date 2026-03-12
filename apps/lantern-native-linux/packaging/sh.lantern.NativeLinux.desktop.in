@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Lantern Native
+Comment=Native Linux Lantern terminal client
+Exec=__BIN_PATH__
+Icon=sh.lantern.NativeLinux
+Terminal=false
+Categories=Development;Utility;TerminalEmulator;
+Keywords=terminal;shell;git;worktree;
+StartupNotify=true
+StartupWMClass=sh.lantern.NativeLinux

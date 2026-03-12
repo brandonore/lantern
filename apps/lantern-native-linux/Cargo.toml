@@ -1,0 +1,12 @@
+[package]
+name = "lantern-native-linux"
+version = "0.1.0"
+edition = "2021"
+description = "Native Linux Lantern client built with GTK4, libadwaita, and VTE"
+
+[dependencies]
+adw = { package = "libadwaita", version = "0.8", features = ["v1_4"] }
+gtk = { package = "gtk4", version = "0.10" }
+lantern-core = { path = "../../crates/lantern-core" }
+uuid = { version = "1", features = ["v4"] }
+vte = { package = "vte4", version = "0.9" }

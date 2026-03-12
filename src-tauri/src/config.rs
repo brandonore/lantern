@@ -19,6 +19,8 @@ pub struct UserConfig {
     pub git_poll_interval_secs: u64,
     #[serde(default = "default_ui_scale")]
     pub ui_scale: f64,
+    #[serde(default = "default_terminal_latency_mode")]
+    pub terminal_latency_mode: String,
 }
 
 fn default_shell() -> String {
@@ -42,6 +44,9 @@ fn default_git_poll_interval() -> u64 {
 fn default_ui_scale() -> f64 {
     1.0
 }
+fn default_terminal_latency_mode() -> String {
+    "low-latency".to_string()
+}
 
 impl Default for UserConfig {
     fn default() -> Self {
@@ -53,6 +58,7 @@ impl Default for UserConfig {
             theme: default_theme(),
             git_poll_interval_secs: default_git_poll_interval(),
             ui_scale: default_ui_scale(),
+            terminal_latency_mode: default_terminal_latency_mode(),
         }
     }
 }
@@ -74,8 +80,8 @@ impl UserConfig {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-        let content = toml::to_string_pretty(self)
-            .map_err(|e| LanternError::Config(e.to_string()))?;
+        let content =
+            toml::to_string_pretty(self).map_err(|e| LanternError::Config(e.to_string()))?;
         fs::write(&path, content)?;
         Ok(())
     }
@@ -102,6 +108,9 @@ impl UserConfig {
         if let Some(v) = patch.get("ui_scale").and_then(|v| v.as_f64()) {
             self.ui_scale = v;
         }
+        if let Some(v) = patch.get("terminal_latency_mode").and_then(|v| v.as_str()) {
+            self.terminal_latency_mode = v.to_string();
+        }
     }
 }
 
@@ -119,6 +128,7 @@ mod tests {
         assert_eq!(config.theme, "nord-dark");
         assert_eq!(config.git_poll_interval_secs, 5);
         assert!((config.ui_scale - 1.0).abs() < f64::EPSILON);
+        assert_eq!(config.terminal_latency_mode, "low-latency");
     }
 
     #[test]
@@ -134,6 +144,7 @@ mod tests {
             theme: "dark".to_string(),
             git_poll_interval_secs: 10,
             ui_scale: 1.2,
+            terminal_latency_mode: "compatible".to_string(),
         };
 
         let content = toml::to_string_pretty(&config).unwrap();
@@ -144,6 +155,7 @@ mod tests {
         assert_eq!(loaded.font_family, "Fira Code");
         assert_eq!(loaded.font_size, 16);
         assert_eq!(loaded.scrollback_lines, 5000);
+        assert_eq!(loaded.terminal_latency_mode, "compatible");
     }
 
     #[test]
@@ -154,6 +166,7 @@ mod tests {
         assert_eq!(config.font_size, 18);
         // Other fields unchanged
         assert_eq!(config.scrollback_lines, 10000);
+        assert_eq!(config.terminal_latency_mode, "low-latency");
     }
 
     #[test]

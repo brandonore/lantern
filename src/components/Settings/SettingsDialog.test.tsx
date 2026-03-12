@@ -13,6 +13,7 @@ beforeEach(() => {
       theme: "dark",
       git_poll_interval_secs: 5,
       ui_scale: 1,
+      terminal_latency_mode: "low-latency",
     },
     settingsOpen: true,
   });

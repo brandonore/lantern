@@ -2,7 +2,9 @@ use crate::error::LanternError;
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use serde::Serialize;
 use std::collections::HashMap;
+use std::fs;
 use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -36,6 +38,188 @@ pub struct PtyManager {
     sessions: Mutex<HashMap<String, PtySession>>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ShellKind {
+    Bash,
+    Fish,
+    Pwsh,
+    Zsh,
+    Unknown,
+}
+
+fn shell_kind(shell: &str) -> ShellKind {
+    let Some(file_name) = Path::new(shell)
+        .file_name()
+        .and_then(|value| value.to_str())
+    else {
+        return ShellKind::Unknown;
+    };
+
+    match file_name
+        .trim_start_matches('-')
+        .trim_end_matches(".exe")
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "bash" => ShellKind::Bash,
+        "fish" => ShellKind::Fish,
+        "pwsh" => ShellKind::Pwsh,
+        "zsh" => ShellKind::Zsh,
+        _ => ShellKind::Unknown,
+    }
+}
+
+fn shell_integration_dir(session_id: &str) -> PathBuf {
+    std::env::temp_dir()
+        .join("lantern-shell-integration")
+        .join(session_id)
+}
+
+fn prompt_marker() -> &'static str {
+    "\u{1b}]633;Lantern;Prompt\u{7}"
+}
+
+fn configure_shell_integration(
+    cmd: &mut CommandBuilder,
+    shell: &str,
+    session_id: &str,
+) -> Result<(), LanternError> {
+    let integration_dir = shell_integration_dir(session_id);
+    match shell_kind(shell) {
+        ShellKind::Bash => configure_bash_integration(cmd, &integration_dir),
+        ShellKind::Fish => configure_fish_integration(cmd, &integration_dir),
+        ShellKind::Pwsh => configure_pwsh_integration(cmd, &integration_dir),
+        ShellKind::Zsh => configure_zsh_integration(cmd, &integration_dir),
+        ShellKind::Unknown => Ok(()),
+    }
+}
+
+fn configure_bash_integration(
+    cmd: &mut CommandBuilder,
+    integration_dir: &Path,
+) -> Result<(), LanternError> {
+    fs::create_dir_all(integration_dir)?;
+    let rc_path = integration_dir.join("lantern.bashrc");
+    fs::write(
+        &rc_path,
+        format!(
+            r#"if [ -f "$HOME/.bashrc" ]; then
+  . "$HOME/.bashrc"
+fi
+
+__lantern_emit_prompt() {{
+  printf '{marker}'
+}}
+
+if [ -n "${{PROMPT_COMMAND:-}}" ]; then
+  PROMPT_COMMAND="__lantern_emit_prompt;$PROMPT_COMMAND"
+else
+  PROMPT_COMMAND="__lantern_emit_prompt"
+fi
+"#,
+            marker = prompt_marker()
+        ),
+    )?;
+    cmd.arg("--rcfile");
+    cmd.arg(rc_path);
+    cmd.arg("-i");
+    Ok(())
+}
+
+fn configure_fish_integration(
+    cmd: &mut CommandBuilder,
+    integration_dir: &Path,
+) -> Result<(), LanternError> {
+    let fish_dir = integration_dir.join("fish");
+    fs::create_dir_all(&fish_dir)?;
+    let config_path = fish_dir.join("config.fish");
+    fs::write(
+        &config_path,
+        format!(
+            r#"if test -f "$HOME/.config/fish/config.fish"
+  source "$HOME/.config/fish/config.fish"
+end
+
+if functions -q fish_prompt
+  functions -c fish_prompt __lantern_original_fish_prompt
+end
+
+function fish_prompt
+  printf '{marker}'
+  if functions -q __lantern_original_fish_prompt
+    __lantern_original_fish_prompt
+  else
+    printf '%s> ' (prompt_pwd)
+  end
+end
+"#,
+            marker = prompt_marker()
+        ),
+    )?;
+    cmd.env("XDG_CONFIG_HOME", integration_dir);
+    cmd.arg("-i");
+    Ok(())
+}
+
+fn configure_pwsh_integration(
+    cmd: &mut CommandBuilder,
+    integration_dir: &Path,
+) -> Result<(), LanternError> {
+    fs::create_dir_all(integration_dir)?;
+    let script_path = integration_dir.join("lantern-profile.ps1");
+    fs::write(
+        &script_path,
+        format!(
+            r#"if (Test-Path $PROFILE.CurrentUserAllHosts) {{ . $PROFILE.CurrentUserAllHosts }}
+if (Test-Path $PROFILE.CurrentUserCurrentHost) {{ . $PROFILE.CurrentUserCurrentHost }}
+
+$__lantern_original_prompt = $function:prompt
+function global:prompt {{
+  [Console]::Out.Write("{marker}")
+  if ($__lantern_original_prompt) {{
+    & $__lantern_original_prompt
+  }} else {{
+    "PS $($executionContext.SessionState.Path.CurrentLocation)$('>' * ($nestedPromptLevel + 1)) "
+  }}
+}}
+"#,
+            marker = prompt_marker()
+        ),
+    )?;
+    cmd.arg("-NoLogo");
+    cmd.arg("-NoExit");
+    cmd.arg("-File");
+    cmd.arg(script_path);
+    Ok(())
+}
+
+fn configure_zsh_integration(
+    cmd: &mut CommandBuilder,
+    integration_dir: &Path,
+) -> Result<(), LanternError> {
+    fs::create_dir_all(integration_dir)?;
+    let rc_path = integration_dir.join(".zshrc");
+    fs::write(
+        &rc_path,
+        format!(
+            r#"if [ -f "$HOME/.zshrc" ]; then
+  source "$HOME/.zshrc"
+fi
+
+autoload -Uz add-zsh-hook 2>/dev/null
+__lantern_emit_prompt() {{
+  printf '{marker}'
+}}
+add-zsh-hook precmd __lantern_emit_prompt
+"#,
+            marker = prompt_marker()
+        ),
+    )?;
+    cmd.env("ZDOTDIR", integration_dir);
+    cmd.arg("-i");
+    Ok(())
+}
+
 impl PtyManager {
     pub fn new() -> Self {
         Self {
@@ -65,6 +249,12 @@ impl PtyManager {
         let mut cmd = CommandBuilder::new(shell);
         cmd.cwd(cwd);
         cmd.env("TERM", "xterm-256color");
+        if let Err(error) = configure_shell_integration(&mut cmd, shell, session_id) {
+            eprintln!(
+                "Shell integration setup failed for session {}: {}",
+                session_id, error
+            );
+        }
 
         let child = pair
             .slave
@@ -119,10 +309,7 @@ impl PtyManager {
                             if shutdown_clone.load(Ordering::Relaxed) {
                                 break;
                             }
-                            eprintln!(
-                                "PTY reader error for session {}: {}",
-                                session_id_clone, e
-                            );
+                            eprintln!("PTY reader error for session {}: {}", session_id_clone, e);
                             let code = child_for_reader
                                 .lock()
                                 .unwrap()
@@ -241,8 +428,12 @@ mod tests {
     use super::*;
     use std::sync::mpsc;
     use std::time::Duration;
+    use tempfile::tempdir;
 
-    fn wait_for_output(rx: &mpsc::Receiver<TerminalOutput>, timeout_ms: u64) -> Vec<TerminalOutput> {
+    fn wait_for_output(
+        rx: &mpsc::Receiver<TerminalOutput>,
+        timeout_ms: u64,
+    ) -> Vec<TerminalOutput> {
         let mut outputs = Vec::new();
         let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms);
         while std::time::Instant::now() < deadline {
@@ -266,6 +457,37 @@ mod tests {
     }
 
     #[test]
+    fn test_configure_bash_shell_integration() {
+        let dir = tempdir().unwrap();
+        let mut cmd = CommandBuilder::new("/bin/bash");
+        configure_bash_integration(&mut cmd, dir.path()).unwrap();
+
+        let argv = cmd.get_argv();
+        assert!(argv.iter().any(|arg| arg == "--rcfile"));
+        assert!(argv.iter().any(|arg| arg == "-i"));
+
+        let rc_path = dir.path().join("lantern.bashrc");
+        let content = fs::read_to_string(rc_path).unwrap();
+        assert!(content.contains(prompt_marker()));
+        assert!(content.contains("PROMPT_COMMAND"));
+    }
+
+    #[test]
+    fn test_configure_zsh_shell_integration() {
+        let dir = tempdir().unwrap();
+        let mut cmd = CommandBuilder::new("/bin/zsh");
+        configure_zsh_integration(&mut cmd, dir.path()).unwrap();
+
+        assert_eq!(cmd.get_env("ZDOTDIR"), Some(dir.path().as_os_str()));
+        assert!(cmd.get_argv().iter().any(|arg| arg == "-i"));
+
+        let rc_path = dir.path().join(".zshrc");
+        let content = fs::read_to_string(rc_path).unwrap();
+        assert!(content.contains(prompt_marker()));
+        assert!(content.contains("add-zsh-hook"));
+    }
+
+    #[test]
     fn test_spawn_pty_returns_pid() {
         let mgr = PtyManager::new();
         let (tx, _rx) = mpsc::channel();
@@ -276,7 +498,9 @@ mod tests {
                 "/tmp",
                 80,
                 24,
-                Box::new(move |out| { let _ = tx.send(out); }),
+                Box::new(move |out| {
+                    let _ = tx.send(out);
+                }),
             )
             .unwrap();
         assert!(info.pid > 0);
@@ -293,7 +517,9 @@ mod tests {
             "/tmp",
             80,
             24,
-            Box::new(move |out| { let _ = tx.send(out); }),
+            Box::new(move |out| {
+                let _ = tx.send(out);
+            }),
         )
         .unwrap();
 
@@ -322,7 +548,9 @@ mod tests {
             "/tmp",
             80,
             24,
-            Box::new(move |out| { let _ = tx.send(out); }),
+            Box::new(move |out| {
+                let _ = tx.send(out);
+            }),
         )
         .unwrap();
         // Should not error
@@ -341,7 +569,9 @@ mod tests {
                 "/tmp",
                 80,
                 24,
-                Box::new(move |out| { let _ = tx.send(out); }),
+                Box::new(move |out| {
+                    let _ = tx.send(out);
+                }),
             )
             .unwrap();
         let pid = info.pid;
@@ -365,7 +595,9 @@ mod tests {
             "/tmp",
             80,
             24,
-            Box::new(move |out| { let _ = tx.send(out); }),
+            Box::new(move |out| {
+                let _ = tx.send(out);
+            }),
         )
         .unwrap();
 
@@ -392,7 +624,9 @@ mod tests {
             "/tmp",
             80,
             24,
-            Box::new(move |out| { let _ = tx.send(out); }),
+            Box::new(move |out| {
+                let _ = tx.send(out);
+            }),
         );
         assert!(result.is_err());
     }
@@ -411,7 +645,9 @@ mod tests {
                 "/tmp",
                 80,
                 24,
-                Box::new(move |out| { let _ = tx.send(out); }),
+                Box::new(move |out| {
+                    let _ = tx.send(out);
+                }),
             )
             .unwrap();
             receivers.push((id, rx));

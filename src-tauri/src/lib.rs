@@ -20,7 +20,10 @@ pub fn run() {
 
     // Load existing layout for initial state
     let saved_layout = db::load_layout(&db).ok().flatten();
-    let initial_sidebar_width = saved_layout.as_ref().map(|l| l.sidebar_width).unwrap_or(250);
+    let initial_sidebar_width = saved_layout
+        .as_ref()
+        .map(|l| l.sidebar_width)
+        .unwrap_or(250);
     let initial_sidebar_collapsed = saved_layout
         .as_ref()
         .map(|l| l.sidebar_collapsed)

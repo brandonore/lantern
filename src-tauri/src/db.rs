@@ -170,10 +170,7 @@ fn migrate_schema(conn: &Connection) -> Result<(), LanternError> {
             )?;
         }
 
-        conn.execute(
-            "INSERT INTO schema_version (version) VALUES (2)",
-            [],
-        )?;
+        conn.execute("INSERT INTO schema_version (version) VALUES (2)", [])?;
     }
 
     if version < 3 {
@@ -245,10 +242,11 @@ pub fn add_repo_grouped(
         return Err(LanternError::RepoAlreadyExists(path.to_string()));
     }
 
-    let max_order: i32 = db
-        .query_row("SELECT COALESCE(MAX(sort_order), -1) FROM repo", [], |row| {
-            row.get(0)
-        })?;
+    let max_order: i32 = db.query_row(
+        "SELECT COALESCE(MAX(sort_order), -1) FROM repo",
+        [],
+        |row| row.get(0),
+    )?;
 
     db.execute(
         "INSERT INTO repo (id, name, path, sort_order, group_id, is_default) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
@@ -306,7 +304,10 @@ pub fn reorder_repos(conn: &DbConn, ids: &[String]) -> Result<(), LanternError> 
 }
 
 /// Find the group_id of any existing repo whose path matches one of the given paths.
-pub fn find_group_id_by_paths(conn: &DbConn, paths: &[String]) -> Result<Option<String>, LanternError> {
+pub fn find_group_id_by_paths(
+    conn: &DbConn,
+    paths: &[String],
+) -> Result<Option<String>, LanternError> {
     if paths.is_empty() {
         return Ok(None);
     }
@@ -327,7 +328,12 @@ pub fn find_group_id_by_paths(conn: &DbConn, paths: &[String]) -> Result<Option<
 }
 
 /// Update a repo's group_id.
-pub fn set_repo_group(conn: &DbConn, repo_id: &str, group_id: &str, is_default: bool) -> Result<(), LanternError> {
+pub fn set_repo_group(
+    conn: &DbConn,
+    repo_id: &str,
+    group_id: &str,
+    is_default: bool,
+) -> Result<(), LanternError> {
     let db = conn.lock().unwrap();
     db.execute(
         "UPDATE repo SET group_id = ?1, is_default = ?2 WHERE id = ?3",
@@ -422,11 +428,7 @@ pub fn rename_session(conn: &DbConn, session_id: &str, title: &str) -> Result<()
 
 // ── Active Tab ──
 
-pub fn set_active_tab(
-    conn: &DbConn,
-    repo_id: &str,
-    session_id: &str,
-) -> Result<(), LanternError> {
+pub fn set_active_tab(conn: &DbConn, repo_id: &str, session_id: &str) -> Result<(), LanternError> {
     let db = conn.lock().unwrap();
     db.execute(
         "INSERT OR REPLACE INTO active_tab (repo_id, session_id) VALUES (?1, ?2)",
@@ -453,8 +455,8 @@ pub fn get_active_tab(conn: &DbConn, repo_id: &str) -> Result<Option<String>, La
 
 pub fn save_layout(conn: &DbConn, layout: &AppLayout) -> Result<(), LanternError> {
     let db = conn.lock().unwrap();
-    let collapsed_json = serde_json::to_string(&layout.collapsed_group_ids)
-        .unwrap_or_else(|_| "[]".to_string());
+    let collapsed_json =
+        serde_json::to_string(&layout.collapsed_group_ids).unwrap_or_else(|_| "[]".to_string());
     db.execute(
         "INSERT OR REPLACE INTO app_state (id, window_x, window_y, window_width, window_height, window_maximized, sidebar_width, sidebar_collapsed, active_repo_id, collapsed_group_ids)
          VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
@@ -861,7 +863,10 @@ mod tests {
         let _r2 = add_repo_grouped(&conn, d2.path().to_str().unwrap(), Some(gid), false).unwrap();
         let r3 = add_repo_grouped(&conn, d3.path().to_str().unwrap(), Some(gid), true).unwrap();
         let repos = list_repos(&conn).unwrap();
-        let grouped: Vec<_> = repos.iter().filter(|r| r.group_id.as_deref() == Some(gid)).collect();
+        let grouped: Vec<_> = repos
+            .iter()
+            .filter(|r| r.group_id.as_deref() == Some(gid))
+            .collect();
         assert_eq!(grouped[0].id, r3.id);
         assert!(grouped[0].is_default);
     }
@@ -878,7 +883,10 @@ mod tests {
         let _r3 = add_repo_grouped(&conn, d3.path().to_str().unwrap(), Some(gid), false).unwrap();
         remove_repo(&conn, &r1.id).unwrap();
         let repos = list_repos(&conn).unwrap();
-        let grouped: Vec<_> = repos.iter().filter(|r| r.group_id.as_deref() == Some(gid)).collect();
+        let grouped: Vec<_> = repos
+            .iter()
+            .filter(|r| r.group_id.as_deref() == Some(gid))
+            .collect();
         assert_eq!(grouped.len(), 2);
     }
 
@@ -891,7 +899,10 @@ mod tests {
         add_repo_grouped(&conn, d1.path().to_str().unwrap(), Some(gid), true).unwrap();
         let result = find_group_id_by_paths(
             &conn,
-            &[d1.path().to_str().unwrap().to_string(), d2.path().to_str().unwrap().to_string()],
+            &[
+                d1.path().to_str().unwrap().to_string(),
+                d2.path().to_str().unwrap().to_string(),
+            ],
         )
         .unwrap();
         assert_eq!(result, Some(gid.to_string()));
@@ -902,11 +913,8 @@ mod tests {
         let conn = test_db();
         let d1 = tempfile::tempdir().unwrap();
         add_repo(&conn, d1.path().to_str().unwrap()).unwrap();
-        let result = find_group_id_by_paths(
-            &conn,
-            &[d1.path().to_str().unwrap().to_string()],
-        )
-        .unwrap();
+        let result =
+            find_group_id_by_paths(&conn, &[d1.path().to_str().unwrap().to_string()]).unwrap();
         assert!(result.is_none());
     }
 

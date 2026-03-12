@@ -32,8 +32,7 @@ pub fn git_info_for_path(path: &str) -> GitInfo {
 
     let detached = repo.head_detached().unwrap_or(false);
     let branch = if detached {
-        head.target()
-            .map(|oid| format!("{:.7}", oid))
+        head.target().map(|oid| format!("{:.7}", oid))
     } else {
         head.shorthand().map(|s| s.to_string())
     };
@@ -130,9 +129,7 @@ pub fn detect_worktree_info(path: &str) -> Option<WorktreeInfo> {
     };
 
     // Normalize: strip trailing slash for consistency
-    let main_repo_path = main_repo_path
-        .canonicalize()
-        .unwrap_or(main_repo_path);
+    let main_repo_path = main_repo_path.canonicalize().unwrap_or(main_repo_path);
 
     let main_repo = Repository::open(&main_repo_path).ok()?;
     let repo_name: String = main_repo_path
@@ -222,14 +219,8 @@ pub fn get_foreground_process(child_pid: u32) -> Option<ProcessInfo> {
     }
 
     // Read the foreground process's cmdline
-    let cmdline =
-        std::fs::read_to_string(format!("/proc/{}/cmdline", tpgid)).ok()?;
-    let exe_name = cmdline
-        .split('\0')
-        .next()?
-        .rsplit('/')
-        .next()?
-        .to_string();
+    let cmdline = std::fs::read_to_string(format!("/proc/{}/cmdline", tpgid)).ok()?;
+    let exe_name = cmdline.split('\0').next()?.rsplit('/').next()?.to_string();
 
     let (is_agent, agent_label) = match exe_name.as_str() {
         "claude" => (true, Some("Claude Code".to_string())),
@@ -422,7 +413,11 @@ mod tests {
     fn test_detect_worktree_multiple() {
         let (_outer, main_path) = init_worktree_test_repo();
 
-        for (name, branch) in &[("../wt-a", "feat-a"), ("../wt-b", "feat-b"), ("../wt-c", "feat-c")] {
+        for (name, branch) in &[
+            ("../wt-a", "feat-a"),
+            ("../wt-b", "feat-b"),
+            ("../wt-c", "feat-c"),
+        ] {
             add_worktree(&main_path, name, branch);
         }
 

@@ -4,19 +4,30 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What is Lantern
 
-Lantern is a lightweight Linux desktop app for organizing terminal sessions grouped by repository. Sidebar of repos on the left, terminal tabs per repo on the right. Built with Tauri v2 (Rust backend) + React 19 + xterm.js. Not an IDE.
+Lantern is a lightweight Linux desktop app for organizing terminal sessions grouped by repository. Sidebar of repos on the left, terminal tabs per repo on the right. The default Linux desktop path is now the native GTK/libadwaita/VTE client, with the older Tauri v2 + React 19 + xterm.js app kept as an explicit fallback path. Not an IDE.
 
 ## Commands
 
 ```bash
-# Frontend dev server (Vite on port 1420)
+# Default desktop app for the current platform
 npm run dev
 
-# Full Tauri app (frontend + Rust backend)
-cd src-tauri && cargo tauri dev
+# Default production desktop build for the current platform
+npm run build
 
-# Build production app
-cd src-tauri && cargo tauri build
+# Frontend dev server (Vite on port 1420)
+npm run frontend:dev
+
+# Frontend production bundle
+npm run frontend:build
+
+# Legacy Tauri app (frontend + Rust backend)
+npm run tauri:dev
+npm run tauri:build
+
+# Native Linux app directly
+npm run native:dev
+npm run native:build
 
 # Frontend tests (vitest, jsdom)
 npm test                    # run once
@@ -24,18 +35,49 @@ npm run test:watch          # watch mode
 npx vitest run src/stores/appStore.test.ts  # single test file
 
 # Rust tests
+cargo test -p lantern-core
+cargo test -p lantern-native-linux
 cd src-tauri && cargo test
 
 # Type check frontend
 npx tsc --noEmit
 
 # Rust check
+cargo check -p lantern-native-linux
 cd src-tauri && cargo check
 ```
 
 ## Architecture
 
-### Two-process model
+### Current desktop paths
+
+**Native Linux app** (`apps/lantern-native-linux/`) — GTK4/libadwaita shell with VTE-backed terminals. This is the default desktop path on Linux through the top-level wrapper scripts.
+
+**Shared core** (`crates/lantern-core/`) — shared Rust models, config loading, SQLite persistence, workspace restore/normalization, and git/worktree utilities used by the native Linux client.
+
+**Legacy Tauri app** (`src-tauri/` + `src/`) — Rust backend plus React/xterm.js frontend kept for non-Linux and fallback work.
+
+### Primary Linux-native modules
+
+| Module | Purpose |
+|--------|---------|
+| `apps/lantern-native-linux/src/app.rs` | Main GTK/libadwaita window, sidebar, tabs, splits, search, settings, and runtime state wiring |
+| `apps/lantern-native-linux/src/terminal_host.rs` | VTE-backed terminal surface host and shell spawning |
+| `apps/lantern-native-linux/src/theme.rs` | Native theme normalization and VTE palette application |
+| `crates/lantern-core/src/db.rs` | SQLite schema, migrations, layout/session persistence, repo ordering, native split persistence |
+| `crates/lantern-core/src/workspace.rs` | Workspace restore normalization and repo/tab ordering logic |
+| `crates/lantern-core/src/git.rs` | Branch/dirty/divergence info, worktree discovery, foreground process classification |
+| `apps/lantern-native-linux/packaging/` | Native Linux install/package/uninstall scripts, desktop metadata, dependency preflight |
+| `scripts/desktop-*.sh` | Top-level desktop dev/build/install wrappers that route Linux to the native client |
+
+### Native runtime model
+
+- GTK4/libadwaita renders the window chrome, sidebar, tab strip, settings, and search UI.
+- VTE owns terminal rendering, PTY lifecycle, clipboard, search integration, and shell lifecycle signals.
+- `lantern-core` owns persisted state and restore logic so the native UI stays thin.
+- Active process detection still uses lightweight `/proc` inspection, but shell prompt/task transitions come from VTE signals instead of frontend echo hacks.
+
+### Legacy Tauri architecture
 
 **Rust backend** (`src-tauri/src/`) — PTY management, SQLite persistence, git status polling, TOML config. No HTTP server; communicates with frontend exclusively through Tauri commands and events.
 

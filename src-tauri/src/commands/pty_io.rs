@@ -25,10 +25,7 @@ fn parse_required_header(headers: &HeaderMap, name: &str) -> Result<String, Lant
         .map_err(|_| LanternError::InvalidInput(format!("invalid {name} header")))
 }
 
-fn parse_optional_u64_header(
-    headers: &HeaderMap,
-    name: &str,
-) -> Result<Option<u64>, LanternError> {
+fn parse_optional_u64_header(headers: &HeaderMap, name: &str) -> Result<Option<u64>, LanternError> {
     headers
         .get(name)
         .map(|value| {
@@ -36,9 +33,9 @@ fn parse_optional_u64_header(
                 .to_str()
                 .map_err(|_| LanternError::InvalidInput(format!("invalid {name} header")))
                 .and_then(|value| {
-                    value.parse::<u64>().map_err(|_| {
-                        LanternError::InvalidInput(format!("invalid {name} header"))
-                    })
+                    value
+                        .parse::<u64>()
+                        .map_err(|_| LanternError::InvalidInput(format!("invalid {name} header")))
                 })
         })
         .transpose()
@@ -69,7 +66,10 @@ pub fn terminal_write(
 }
 
 #[tauri::command]
-pub fn terminal_write_raw(request: Request<'_>, state: State<AppState>) -> Result<(), LanternError> {
+pub fn terminal_write_raw(
+    request: Request<'_>,
+    state: State<AppState>,
+) -> Result<(), LanternError> {
     #[cfg(debug_assertions)]
     let command_started = Instant::now();
     let (session_id, seq, data) = parse_raw_write_request(request.headers(), request.body())?;

@@ -1,10 +1,28 @@
 # Lantern — Terminal Workspace Manager
 
+## Status
+
+The current default Linux desktop path is the native GTK4/libadwaita/VTE client in `apps/lantern-native-linux/`, backed by shared Rust state in `crates/lantern-core/`. The Tauri + React + xterm architecture described below remains in the repo as the legacy fallback path and historical design context, not the primary Linux runtime.
+
 ## Context
 
 No good Linux GUI exists for organizing multiple terminal sessions grouped by repository. Existing tools are either macOS-only (Conductor, Supacode), require tmux, or are full IDEs. Lantern is a lightweight desktop app: a sidebar of repos on the left, terminal tabs per repo on the right. Inspired by Conductor's layout. Clean, modern, dark theme. Not an IDE.
 
 ## Tech Stack
+
+### Current default Linux stack
+
+| Layer | Choice | Why |
+|-------|--------|-----|
+| App framework | **GTK4 + libadwaita** | Native Linux app shell, native widgets, no webview terminal overhead |
+| Terminal rendering | **VTE** | Native terminal widget and PTY integration for Linux |
+| Shared state/core | **Rust workspace crates** | Reuse config, DB, restore, and git logic without UI coupling |
+| Database | **rusqlite (SQLite)** | Embedded, zero-config, persists repos/tabs/layout |
+| Config | **TOML** | Human-editable, Rust-native |
+| Git info | **git2** crate | No subprocess overhead, structured output |
+| Packaging | **shell scripts + tarball bundle** | Simple Linux packaging/install path with CI artifacts |
+
+### Legacy Tauri stack
 
 | Layer | Choice | Why |
 |-------|--------|-----|
@@ -125,10 +143,11 @@ Tauri app launches
   → Frontend mount: store.hydrate()
   → invoke('repo_list') → populate repos with tabs
   → invoke('state_load_layout') → restore window/sidebar/active state
-  → For each persisted tab: spawn new PTY, create TerminalInstance
-  → Terminals alive and connected
+  → Normalize stale repo/tab selections to a valid active terminal
+  → Active terminal mounts, subscribes, and spawns a fresh PTY on demand
+  → Inactive tabs stay as saved structure until opened
   → Git poller starts (5s interval)
-  → Agent detector starts (2s interval, active terminal only)
+  → Active terminal foreground-process polling stays live for agent detection
 ```
 
 ---

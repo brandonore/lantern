@@ -15,6 +15,7 @@ export function SettingsDialog() {
   const originalFontSizeRef = useRef<number>(14);
   const originalFontFamilyRef = useRef<string>("JetBrains Mono");
   const originalUiScaleRef = useRef<number>(1);
+  const originalLatencyModeRef = useRef<UserConfig["terminal_latency_mode"]>("low-latency");
 
   useEffect(() => {
     if (config) {
@@ -23,6 +24,7 @@ export function SettingsDialog() {
       originalFontSizeRef.current = config.font_size;
       originalFontFamilyRef.current = config.font_family;
       originalUiScaleRef.current = config.ui_scale ?? 1;
+      originalLatencyModeRef.current = config.terminal_latency_mode;
     }
   }, [config]);
 
@@ -52,6 +54,11 @@ export function SettingsDialog() {
     applyUiScale(draft.ui_scale ?? 1);
   }, [draft?.ui_scale]);
 
+  useEffect(() => {
+    if (!draft) return;
+    terminalManager.updateAllLatencyMode(draft.terminal_latency_mode);
+  }, [draft?.terminal_latency_mode]);
+
   if (!draft) return null;
 
   const handleSave = async () => {
@@ -74,6 +81,7 @@ export function SettingsDialog() {
     terminalManager.updateAllFontFamily(originalFontFamilyRef.current);
     // Revert UI scale
     applyUiScale(originalUiScaleRef.current);
+    terminalManager.updateAllLatencyMode(originalLatencyModeRef.current);
     setSettingsOpen(false);
   };
 
@@ -197,6 +205,24 @@ export function SettingsDialog() {
               })
             }
           />
+        </div>
+
+        <div className={styles.field}>
+          <label className={styles.label}>Terminal Latency</label>
+          <select
+            className={styles.select}
+            value={draft.terminal_latency_mode}
+            onChange={(e) =>
+              setDraft({
+                ...draft,
+                terminal_latency_mode: e.target
+                  .value as UserConfig["terminal_latency_mode"],
+              })
+            }
+          >
+            <option value="low-latency">Low latency</option>
+            <option value="compatible">Compatible</option>
+          </select>
         </div>
 
         <div className={styles.actions}>

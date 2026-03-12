@@ -1,0 +1,18 @@
+[package]
+name = "lantern-core"
+version = "0.1.0"
+edition = "2021"
+description = "Shared Rust core for Lantern desktop clients"
+
+[dependencies]
+dirs = "5"
+git2 = "0.19"
+rusqlite = { version = "0.31", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+toml = "0.8"
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+tempfile = "3"

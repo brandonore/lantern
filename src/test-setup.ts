@@ -53,7 +53,11 @@ vi.mock("@xterm/xterm", () => ({
     onData: vi.fn(() => createDisposable()),
     onBinary: vi.fn(() => createDisposable()),
     onResize: vi.fn(() => createDisposable()),
-    write: vi.fn(),
+    onSelectionChange: vi.fn(() => createDisposable()),
+    onCursorMove: vi.fn(() => createDisposable()),
+    write: vi.fn((_data, callback?: () => void) => {
+      callback?.();
+    }),
     focus: vi.fn(),
     dispose: vi.fn(),
     refresh: vi.fn(),
@@ -88,7 +92,7 @@ vi.mock("@xterm/xterm", () => ({
     buffer: {
       active: {
         type: "normal",
-        cursorY: 23,
+        cursorY: 0,
         cursorX: 0,
         viewportY: 0,
         baseY: 0,

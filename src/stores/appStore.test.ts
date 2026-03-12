@@ -33,6 +33,7 @@ describe("appStore", () => {
           theme: "dark",
           git_poll_interval_secs: 5,
           ui_scale: 1,
+          terminal_latency_mode: "low-latency",
         });
       if (cmd === "state_load_layout") return Promise.resolve(null);
       if (cmd === "terminal_list") return Promise.resolve([]);
@@ -58,6 +59,7 @@ describe("appStore", () => {
           theme: "dark",
           git_poll_interval_secs: 5,
           ui_scale: 1,
+          terminal_latency_mode: "low-latency",
         });
       if (cmd === "state_load_layout")
         return Promise.resolve({
@@ -78,6 +80,97 @@ describe("appStore", () => {
 
     expect(useAppStore.getState().sidebarWidth).toBe(300);
     expect(useAppStore.getState().sidebarCollapsed).toBe(true);
+  });
+
+  it("hydrate falls back to the first repo when the saved repo no longer exists", async () => {
+    mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === "repo_list")
+        return Promise.resolve([
+          { id: "r1", name: "repo1", path: "/tmp/repo1", sort_order: 0 },
+          { id: "r2", name: "repo2", path: "/tmp/repo2", sort_order: 1 },
+        ]);
+      if (cmd === "config_get")
+        return Promise.resolve({
+          default_shell: "/bin/bash",
+          font_family: "JetBrains Mono",
+          font_size: 14,
+          scrollback_lines: 10000,
+          theme: "dark",
+          git_poll_interval_secs: 5,
+          ui_scale: 1,
+          terminal_latency_mode: "low-latency",
+        });
+      if (cmd === "state_load_layout")
+        return Promise.resolve({
+          window_x: null,
+          window_y: null,
+          window_width: 1200,
+          window_height: 800,
+          window_maximized: false,
+          sidebar_width: 300,
+          sidebar_collapsed: false,
+          active_repo_id: "missing-repo",
+          collapsed_group_ids: [],
+        });
+      if (cmd === "terminal_list") return Promise.resolve([]);
+      if (cmd === "terminal_get_active") return Promise.resolve(null);
+      if (cmd === "repo_get_all_git_info") return Promise.resolve([]);
+      return Promise.resolve(null);
+    });
+
+    await useAppStore.getState().hydrate();
+
+    expect(useAppStore.getState().activeRepoId).toBe("r1");
+  });
+
+  it("hydrate falls back to the first tab when the saved active tab is missing", async () => {
+    mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === "repo_list")
+        return Promise.resolve([
+          { id: "r1", name: "repo1", path: "/tmp/repo1", sort_order: 0 },
+        ]);
+      if (cmd === "config_get")
+        return Promise.resolve({
+          default_shell: "/bin/bash",
+          font_family: "JetBrains Mono",
+          font_size: 14,
+          scrollback_lines: 10000,
+          theme: "dark",
+          git_poll_interval_secs: 5,
+          ui_scale: 1,
+          terminal_latency_mode: "low-latency",
+        });
+      if (cmd === "state_load_layout") return Promise.resolve(null);
+      if (cmd === "terminal_list")
+        return Promise.resolve([
+          {
+            id: "t1",
+            repo_id: "r1",
+            title: "Terminal 1",
+            shell: "/bin/bash",
+            sort_order: 0,
+          },
+          {
+            id: "t2",
+            repo_id: "r1",
+            title: "Terminal 2",
+            shell: "/bin/bash",
+            sort_order: 1,
+          },
+        ]);
+      if (cmd === "terminal_get_active") return Promise.resolve("missing-tab");
+      if (cmd === "terminal_set_active") return Promise.resolve(undefined);
+      if (cmd === "repo_get_all_git_info") return Promise.resolve([]);
+      return Promise.resolve(null);
+    });
+
+    await useAppStore.getState().hydrate();
+
+    expect(useAppStore.getState().repos[0].activeTabId).toBe("t1");
+    expect(mockInvoke).toHaveBeenCalledWith("terminal_set_active", {
+      repoId: "r1",
+      sessionId: "t1",
+    });
   });
 
   it("addRepo calls invoke and updates state", async () => {
@@ -344,6 +437,7 @@ describe("appStore", () => {
           theme: "dark",
           git_poll_interval_secs: 5,
           ui_scale: 1,
+          terminal_latency_mode: "low-latency",
         });
       if (cmd === "state_load_layout") return Promise.resolve(null);
       if (cmd === "terminal_list") return Promise.resolve([]);
@@ -376,6 +470,7 @@ describe("appStore", () => {
           theme: "dark",
           git_poll_interval_secs: 5,
           ui_scale: 1,
+          terminal_latency_mode: "low-latency",
         });
       if (cmd === "state_load_layout") return Promise.resolve(null);
       if (cmd === "terminal_list") return Promise.resolve([]);
@@ -440,6 +535,7 @@ describe("appStore", () => {
           theme: "dark",
           git_poll_interval_secs: 5,
           ui_scale: 1,
+          terminal_latency_mode: "low-latency",
         });
       if (cmd === "state_load_layout")
         return Promise.resolve({

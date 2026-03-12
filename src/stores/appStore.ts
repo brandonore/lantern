@@ -9,6 +9,28 @@ import type {
 } from "../types";
 import * as cmd from "../lib/tauriCommands";
 
+function normalizeActiveTabId(
+  tabs: TerminalTab[],
+  activeTabId: string | null
+): string | null {
+  if (tabs.length === 0) return null;
+  if (activeTabId && tabs.some((tab) => tab.id === activeTabId)) {
+    return activeTabId;
+  }
+  return tabs[0].id;
+}
+
+function normalizeActiveRepoId(
+  repos: RepoWithState[],
+  activeRepoId: string | null
+): string | null {
+  if (repos.length === 0) return null;
+  if (activeRepoId && repos.some((repo) => repo.id === activeRepoId)) {
+    return activeRepoId;
+  }
+  return repos[0].id;
+}
+
 interface AppStore {
   // State
   repos: RepoWithState[];
@@ -65,12 +87,26 @@ export const useAppStore = create<AppStore>()(
         cmd.configGet(),
         cmd.stateLoadLayout(),
       ]);
+      const activeTabRepairs: Array<Promise<void>> = [];
 
       // Load tabs and active tab for each repo
       const reposWithState: RepoWithState[] = await Promise.all(
         repos.map(async (repo: any) => {
           const tabs = await cmd.terminalList(repo.id);
-          const activeTabId = await cmd.terminalGetActive(repo.id);
+          const mappedTabs = tabs.map((t: any) => ({
+            id: t.id,
+            repoId: t.repo_id,
+            name: t.title,
+            shell: t.shell,
+            sortOrder: t.sort_order,
+          }));
+          const persistedActiveTabId = await cmd.terminalGetActive(repo.id);
+          const activeTabId = normalizeActiveTabId(mappedTabs, persistedActiveTabId);
+          if (activeTabId && activeTabId !== persistedActiveTabId) {
+            activeTabRepairs.push(
+              cmd.terminalSetActive(repo.id, activeTabId).catch(() => {})
+            );
+          }
           return {
             id: repo.id,
             name: repo.name,
@@ -85,16 +121,15 @@ export const useAppStore = create<AppStore>()(
               ahead: 0,
               behind: 0,
             },
-            tabs: tabs.map((t: any) => ({
-              id: t.id,
-              repoId: t.repo_id,
-              name: t.title,
-              shell: t.shell,
-              sortOrder: t.sort_order,
-            })),
+            tabs: mappedTabs,
             activeTabId,
           };
         })
+      );
+      await Promise.all(activeTabRepairs);
+      const normalizedActiveRepoId = normalizeActiveRepoId(
+        reposWithState,
+        layout?.active_repo_id ?? null
       );
 
       set((state) => {
@@ -103,14 +138,12 @@ export const useAppStore = create<AppStore>()(
         if (layout) {
           state.sidebarWidth = layout.sidebar_width;
           state.sidebarCollapsed = layout.sidebar_collapsed;
-          state.activeRepoId = layout.active_repo_id;
+          state.activeRepoId = normalizedActiveRepoId;
           if (layout.collapsed_group_ids) {
             state.collapsedGroupIds = layout.collapsed_group_ids;
           }
-        }
-        // Default to first repo if no active repo
-        if (!state.activeRepoId && reposWithState.length > 0) {
-          state.activeRepoId = reposWithState[0].id;
+        } else {
+          state.activeRepoId = normalizedActiveRepoId;
         }
       });
 

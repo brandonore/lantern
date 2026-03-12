@@ -41,6 +41,8 @@ export interface AppLayout {
   collapsed_group_ids: string[];
 }
 
+export type TerminalLatencyMode = "compatible" | "low-latency";
+
 export interface UserConfig {
   default_shell: string;
   font_family: string;
@@ -49,6 +51,7 @@ export interface UserConfig {
   theme: string;
   git_poll_interval_secs: number;
   ui_scale: number;
+  terminal_latency_mode: TerminalLatencyMode;
 }
 
 export interface ProcessInfo {

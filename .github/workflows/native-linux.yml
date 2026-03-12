@@ -1,0 +1,66 @@
+name: Native Linux
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  native-linux:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libadwaita-1-dev \
+            libgtk-4-dev \
+            libsoup-3.0-dev \
+            libvte-2.91-gtk4-dev
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Run frontend tests
+        run: npm test
+
+      - name: Build frontend bundle
+        run: npm run frontend:build
+
+      - name: Run shared core tests
+        run: cargo test -p lantern-core
+
+      - name: Run native Linux tests
+        run: cargo test -p lantern-native-linux
+
+      - name: Package native Linux bundle
+        run: npm run native:package
+
+      - name: Verify staged native Linux bundle
+        run: npm run native:verify-bundle
+
+      - name: Upload native Linux bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: lantern-native-linux
+          path: |
+            apps/lantern-native-linux/dist/*.tar.gz
+            apps/lantern-native-linux/dist/*.tar.gz.sha256
+          if-no-files-found: error

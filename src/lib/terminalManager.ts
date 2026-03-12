@@ -17,7 +17,11 @@ import {
   terminalResize,
   terminalSubscribe,
 } from "./tauriCommands";
-import type { TerminalOutputData } from "../types";
+import type {
+  ProcessInfo,
+  TerminalLatencyMode,
+  TerminalOutputData,
+} from "../types";
 
 const textEncoder = new TextEncoder();
 const BACKSPACE_INPUTS = new Set(["\b", "\u007f"]);
@@ -31,7 +35,18 @@ const DIRECT_SHELL_PROCESSES = new Set([
   "xonsh",
   "zsh",
 ]);
-const PREDICTIVE_ECHO_POLL_MS = 150;
+const RECOGNIZED_AGENT_PROCESSES = new Set([
+  "aider",
+  "claude",
+  "codex",
+  "opencode",
+]);
+const FALLBACK_FOREGROUND_PROCESS_POLL_MS = 1000;
+const INPUT_BATCH_WINDOW_MS = 6;
+const PREDICTIVE_ECHO_DELAY_MS = 45;
+const SHELL_INTEGRATION_PREFIX = "\u001b]633;Lantern;";
+const SHELL_INTEGRATION_PROMPT = "Prompt";
+const SHELL_INTEGRATION_TERMINATOR = "\u0007";
 const TRACE_TERMINAL_LATENCY =
   import.meta.env.DEV &&
   typeof window !== "undefined" &&
@@ -45,12 +60,24 @@ interface InputTrace {
 }
 
 interface PredictiveEchoState {
-  foregroundProcessName: string | null;
+  foregroundProcessInfo: ProcessInfo | null;
+  foregroundProcessPolled: boolean;
+  integrationSeen: boolean;
+  promptReady: boolean;
   pendingText: string;
+  visible: boolean;
   anchorX: number | null;
   marker: IMarker | null;
   decoration: IDecoration | null;
   decorationRenderDisposable: IDisposable | null;
+  revealTimer: number | null;
+  renderFrame: number | null;
+  outputBuffer: string;
+}
+
+interface PendingInput {
+  kind: InputTrace["kind"];
+  bytes: Uint8Array;
 }
 
 interface ManagedTerminal {
@@ -63,9 +90,18 @@ interface ManagedTerminal {
   cleanupHandlers: Array<() => void>;
   nextInputSeq: number;
   pendingInputTrace: InputTrace[];
+  latencyMode: TerminalLatencyMode;
+  pendingInput: PendingInput[];
+  inputFlushTimer: number | null;
+  pendingOutput: string[];
+  outputWriteInFlight: boolean;
+  receivedOutput: boolean;
   predictiveEcho: PredictiveEchoState;
   subscribed: boolean;
 }
+
+type PredictiveEchoMode = "agent" | "shell" | null;
+type ActiveProcessListener = (processInfo: ProcessInfo | null) => void;
 
 function normalizeForegroundProcessName(name: string | null | undefined): string | null {
   if (!name) return null;
@@ -86,8 +122,58 @@ function isPredictiveEchoCharacter(data: string): boolean {
   return code >= 0x20 && code <= 0x7e;
 }
 
-function shouldPredictForForegroundProcess(name: string | null): boolean {
-  return name !== null && DIRECT_SHELL_PROCESSES.has(name);
+function areProcessInfosEqual(
+  left: ProcessInfo | null,
+  right: ProcessInfo | null
+): boolean {
+  if (left === right) return true;
+  if (!left || !right) return false;
+
+  return (
+    left.name === right.name &&
+    left.is_agent === right.is_agent &&
+    left.agent_label === right.agent_label
+  );
+}
+
+function isDirectShellProcess(processInfo: ProcessInfo | null): boolean {
+  const normalizedName = normalizeForegroundProcessName(processInfo?.name);
+  return normalizedName !== null && DIRECT_SHELL_PROCESSES.has(normalizedName);
+}
+
+function isRecognizedAgentProcess(processInfo: ProcessInfo | null): boolean {
+  if (!processInfo) return false;
+  if (processInfo.is_agent) return true;
+
+  const normalizedName = normalizeForegroundProcessName(processInfo.name);
+  return (
+    normalizedName !== null &&
+    RECOGNIZED_AGENT_PROCESSES.has(normalizedName)
+  );
+}
+
+function shouldFlushInputImmediately(
+  data: string,
+  latencyMode: TerminalLatencyMode
+): boolean {
+  if (latencyMode === "compatible") return true;
+  if (data.length !== 1) return true;
+  return !isPredictiveEchoCharacter(data);
+}
+
+function hasPromptSubmitInput(data: string): boolean {
+  return data.includes("\r") || data.includes("\n");
+}
+
+function findTrailingPrefixStart(value: string, prefix: string): number {
+  const minIndex = Math.max(0, value.length - prefix.length + 1);
+  for (let index = minIndex; index < value.length; index += 1) {
+    if (prefix.startsWith(value.slice(index))) {
+      return index;
+    }
+  }
+
+  return -1;
 }
 
 function applyPredictiveEchoStyles(
@@ -117,8 +203,29 @@ function applyPredictiveEchoStyles(
 class TerminalManager {
   private terminals = new Map<string, ManagedTerminal>();
   private activeTabId: string | null = null;
+  private activeProcessInfo: ProcessInfo | null = null;
+  private activeProcessListeners = new Set<ActiveProcessListener>();
   private foregroundProcessPollTimer: number | null = null;
   private foregroundProcessPollInFlight = false;
+
+  private setActiveProcessInfo(processInfo: ProcessInfo | null): void {
+    if (areProcessInfosEqual(this.activeProcessInfo, processInfo)) return;
+
+    this.activeProcessInfo = processInfo;
+    for (const listener of this.activeProcessListeners) {
+      listener(processInfo);
+    }
+  }
+
+  private syncActiveProcessInfo(): void {
+    if (!this.activeTabId) {
+      this.setActiveProcessInfo(null);
+      return;
+    }
+
+    const managed = this.terminals.get(this.activeTabId);
+    this.setActiveProcessInfo(managed?.predictiveEcho.foregroundProcessInfo ?? null);
+  }
 
   private addCleanup(managed: ManagedTerminal, cleanup: () => void): void {
     managed.cleanupHandlers.push(cleanup);
@@ -182,12 +289,35 @@ class TerminalManager {
     }
   }
 
+  private stopPredictiveEchoTimers(managed: ManagedTerminal): void {
+    const { predictiveEcho } = managed;
+
+    if (predictiveEcho.revealTimer !== null) {
+      window.clearTimeout(predictiveEcho.revealTimer);
+      predictiveEcho.revealTimer = null;
+    }
+
+    if (predictiveEcho.renderFrame !== null) {
+      cancelAnimationFrame(predictiveEcho.renderFrame);
+      predictiveEcho.renderFrame = null;
+    }
+  }
+
+  private stopPendingInputFlush(managed: ManagedTerminal): void {
+    if (managed.inputFlushTimer !== null) {
+      window.clearTimeout(managed.inputFlushTimer);
+      managed.inputFlushTimer = null;
+    }
+  }
+
   private clearPredictiveEcho(managed: ManagedTerminal): void {
     const { predictiveEcho } = managed;
     const hadPredictiveEcho =
       predictiveEcho.pendingText.length > 0 ||
       predictiveEcho.decoration !== null ||
       predictiveEcho.marker !== null;
+
+    this.stopPredictiveEchoTimers(managed);
 
     predictiveEcho.decorationRenderDisposable?.dispose();
     predictiveEcho.decorationRenderDisposable = null;
@@ -199,6 +329,7 @@ class TerminalManager {
     predictiveEcho.marker = null;
 
     predictiveEcho.pendingText = "";
+    predictiveEcho.visible = false;
     predictiveEcho.anchorX = null;
 
     if (hadPredictiveEcho) {
@@ -206,19 +337,131 @@ class TerminalManager {
     }
   }
 
+  private setPromptReady(managed: ManagedTerminal, promptReady: boolean): void {
+    managed.predictiveEcho.promptReady = promptReady;
+    if (!promptReady) {
+      this.clearPredictiveEcho(managed);
+    }
+  }
+
+  private sendInput(
+    managed: ManagedTerminal,
+    kind: InputTrace["kind"],
+    bytes: Uint8Array
+  ): void {
+    const seq = this.createInputTrace(managed, managed.tabId, kind, bytes.length);
+    terminalWrite(managed.tabId, bytes, seq).catch(console.error);
+  }
+
+  private flushPendingInput(managed: ManagedTerminal): void {
+    this.stopPendingInputFlush(managed);
+    if (managed.pendingInput.length === 0) return;
+
+    let totalBytes = 0;
+    let kind: InputTrace["kind"] = "text";
+    for (const chunk of managed.pendingInput) {
+      totalBytes += chunk.bytes.length;
+      if (chunk.kind === "binary") {
+        kind = "binary";
+      }
+    }
+
+    const combined = new Uint8Array(totalBytes);
+    let offset = 0;
+    for (const chunk of managed.pendingInput) {
+      combined.set(chunk.bytes, offset);
+      offset += chunk.bytes.length;
+    }
+
+    managed.pendingInput = [];
+    this.sendInput(managed, kind, combined);
+  }
+
+  private drainPendingOutput(managed: ManagedTerminal): void {
+    if (managed.outputWriteInFlight) return;
+    if (managed.pendingOutput.length === 0) return;
+
+    const output = managed.pendingOutput.join("");
+    managed.pendingOutput = [];
+    managed.outputWriteInFlight = true;
+
+    managed.terminal.write(output, () => {
+      managed.outputWriteInFlight = false;
+      if (!this.terminals.has(managed.tabId)) return;
+      this.drainPendingOutput(managed);
+    });
+  }
+
+  private queueOutput(managed: ManagedTerminal, output: string): void {
+    if (output.length === 0) return;
+    managed.pendingOutput.push(output);
+    this.drainPendingOutput(managed);
+  }
+
+  private queueInput(
+    managed: ManagedTerminal,
+    kind: InputTrace["kind"],
+    bytes: Uint8Array,
+    immediate = false
+  ): void {
+    if (immediate) {
+      this.flushPendingInput(managed);
+      this.sendInput(managed, kind, bytes);
+      return;
+    }
+
+    managed.pendingInput.push({ kind, bytes });
+    if (managed.inputFlushTimer !== null) return;
+
+    managed.inputFlushTimer = window.setTimeout(() => {
+      managed.inputFlushTimer = null;
+      this.flushPendingInput(managed);
+    }, INPUT_BATCH_WINDOW_MS);
+  }
+
+  private getPredictiveEchoMode(managed: ManagedTerminal): PredictiveEchoMode {
+    const { predictiveEcho } = managed;
+
+    if (isRecognizedAgentProcess(predictiveEcho.foregroundProcessInfo)) {
+      return "agent";
+    }
+
+    if (
+      predictiveEcho.foregroundProcessPolled &&
+      predictiveEcho.foregroundProcessInfo
+    ) {
+      if (!isDirectShellProcess(predictiveEcho.foregroundProcessInfo)) {
+        return null;
+      }
+      if (predictiveEcho.integrationSeen && !predictiveEcho.promptReady) {
+        return null;
+      }
+      return "shell";
+    }
+
+    if (predictiveEcho.integrationSeen) {
+      return predictiveEcho.promptReady ? "shell" : null;
+    }
+
+    if (predictiveEcho.foregroundProcessPolled) return null;
+
+    return "shell";
+  }
+
   private isPredictiveEchoEligible(managed: ManagedTerminal): boolean {
     if (managed.tabId !== this.activeTabId) return false;
-    if (!shouldPredictForForegroundProcess(managed.predictiveEcho.foregroundProcessName)) {
-      return false;
-    }
+
+    const mode = this.getPredictiveEchoMode(managed);
+    if (!mode) return false;
 
     const { terminal } = managed;
     const buffer = terminal.buffer.active;
 
-    if (buffer.type !== "normal") return false;
     if (terminal.hasSelection()) return false;
-    if (buffer.baseY !== buffer.viewportY) return false;
-    if (buffer.cursorY !== terminal.rows - 1) return false;
+    if (mode === "shell") {
+      if (buffer.type !== "normal") return false;
+      if (buffer.baseY !== buffer.viewportY) return false;
+    }
 
     return true;
   }
@@ -261,6 +504,45 @@ class TerminalManager {
     return true;
   }
 
+  private queuePredictiveEchoRender(managed: ManagedTerminal): void {
+    if (!managed.predictiveEcho.visible) return;
+    if (managed.predictiveEcho.renderFrame !== null) return;
+
+    managed.predictiveEcho.renderFrame = requestAnimationFrame(() => {
+      managed.predictiveEcho.renderFrame = null;
+      if (!managed.predictiveEcho.visible) return;
+      if (!this.renderPredictiveEcho(managed)) {
+        this.clearPredictiveEcho(managed);
+      }
+    });
+  }
+
+  private schedulePredictiveEchoReveal(managed: ManagedTerminal): void {
+    const mode = this.getPredictiveEchoMode(managed);
+    if (!mode) return;
+
+    if (managed.latencyMode === "compatible" || mode === "agent") {
+      managed.predictiveEcho.visible = true;
+      this.queuePredictiveEchoRender(managed);
+      return;
+    }
+
+    if (managed.predictiveEcho.visible) {
+      this.queuePredictiveEchoRender(managed);
+      return;
+    }
+
+    if (managed.predictiveEcho.revealTimer !== null) return;
+
+    managed.predictiveEcho.revealTimer = window.setTimeout(() => {
+      managed.predictiveEcho.revealTimer = null;
+      if (!this.isPredictiveEchoEligible(managed)) return;
+      if (managed.predictiveEcho.pendingText.length === 0) return;
+      managed.predictiveEcho.visible = true;
+      this.queuePredictiveEchoRender(managed);
+    }, PREDICTIVE_ECHO_DELAY_MS);
+  }
+
   private extendPredictiveEcho(managed: ManagedTerminal, input: string): boolean {
     if (!this.isPredictiveEchoEligible(managed)) return false;
 
@@ -282,11 +564,7 @@ class TerminalManager {
     }
 
     predictiveEcho.pendingText = nextText;
-    if (!this.renderPredictiveEcho(managed)) {
-      this.clearPredictiveEcho(managed);
-      return false;
-    }
-
+    this.schedulePredictiveEchoReveal(managed);
     return true;
   }
 
@@ -300,11 +578,9 @@ class TerminalManager {
       return true;
     }
 
-    if (!this.renderPredictiveEcho(managed)) {
-      this.clearPredictiveEcho(managed);
-      return false;
+    if (managed.predictiveEcho.visible) {
+      this.queuePredictiveEchoRender(managed);
     }
-
     return true;
   }
 
@@ -322,14 +598,78 @@ class TerminalManager {
 
   private updateForegroundProcessName(
     managed: ManagedTerminal,
-    processName: string | null
+    processInfo: ProcessInfo | null
   ): void {
-    if (managed.predictiveEcho.foregroundProcessName === processName) return;
+    managed.predictiveEcho.foregroundProcessPolled = true;
+    managed.predictiveEcho.foregroundProcessInfo = processInfo;
 
-    managed.predictiveEcho.foregroundProcessName = processName;
-    if (!shouldPredictForForegroundProcess(processName)) {
+    if (managed.tabId === this.activeTabId) {
+      this.setActiveProcessInfo(processInfo);
+    }
+
+    if (!isDirectShellProcess(processInfo) && !isRecognizedAgentProcess(processInfo)) {
       this.clearPredictiveEcho(managed);
     }
+  }
+
+  private handleShellIntegrationMarker(
+    managed: ManagedTerminal,
+    marker: string
+  ): void {
+    if (marker !== SHELL_INTEGRATION_PROMPT) return;
+
+    managed.predictiveEcho.integrationSeen = true;
+    this.setPromptReady(managed, true);
+  }
+
+  private consumeShellIntegration(
+    managed: ManagedTerminal,
+    data: string
+  ): string {
+    const combined = managed.predictiveEcho.outputBuffer + data;
+    let cursor = 0;
+    let visible = "";
+
+    while (cursor < combined.length) {
+      const start = combined.indexOf(SHELL_INTEGRATION_PREFIX, cursor);
+      if (start === -1) {
+        const trailingPrefixStart = findTrailingPrefixStart(
+          combined.slice(cursor),
+          SHELL_INTEGRATION_PREFIX
+        );
+        if (trailingPrefixStart >= 0) {
+          const absoluteStart = cursor + trailingPrefixStart;
+          visible += combined.slice(cursor, absoluteStart);
+          managed.predictiveEcho.outputBuffer = combined.slice(absoluteStart);
+          return visible;
+        }
+
+        visible += combined.slice(cursor);
+        managed.predictiveEcho.outputBuffer = "";
+        return visible;
+      }
+
+      visible += combined.slice(cursor, start);
+
+      const terminator = combined.indexOf(
+        SHELL_INTEGRATION_TERMINATOR,
+        start + SHELL_INTEGRATION_PREFIX.length
+      );
+      if (terminator === -1) {
+        managed.predictiveEcho.outputBuffer = combined.slice(start);
+        return visible;
+      }
+
+      const marker = combined.slice(
+        start + SHELL_INTEGRATION_PREFIX.length,
+        terminator
+      );
+      this.handleShellIntegrationMarker(managed, marker);
+      cursor = terminator + SHELL_INTEGRATION_TERMINATOR.length;
+    }
+
+    managed.predictiveEcho.outputBuffer = "";
+    return visible;
   }
 
   private stopForegroundProcessPolling(): void {
@@ -353,10 +693,7 @@ class TerminalManager {
       const processInfo = await terminalGetForegroundProcess(tabId);
       if (this.activeTabId !== tabId) return;
 
-      this.updateForegroundProcessName(
-        managed,
-        normalizeForegroundProcessName(processInfo?.name)
-      );
+      this.updateForegroundProcessName(managed, processInfo ?? null);
     } catch {
       if (this.activeTabId !== tabId) return;
       this.updateForegroundProcessName(managed, null);
@@ -369,12 +706,19 @@ class TerminalManager {
     this.stopForegroundProcessPolling();
 
     if (!this.activeTabId) return;
-    if (!this.terminals.has(this.activeTabId)) return;
+    const managed = this.terminals.get(this.activeTabId);
+    if (!managed) return;
 
     void this.pollForegroundProcess();
     this.foregroundProcessPollTimer = window.setInterval(() => {
       void this.pollForegroundProcess();
-    }, PREDICTIVE_ECHO_POLL_MS);
+    }, FALLBACK_FOREGROUND_PROCESS_POLL_MS);
+  }
+
+  private scheduleForegroundProcessRefresh(delayMs: number): void {
+    window.setTimeout(() => {
+      void this.pollForegroundProcess();
+    }, delayMs);
   }
 
   setActiveTab(tabId: string | null): void {
@@ -385,19 +729,22 @@ class TerminalManager {
       }
     }
 
-    if (this.activeTabId === tabId && this.foregroundProcessPollTimer !== null) {
-      return;
-    }
-
     this.activeTabId = tabId;
+    this.syncActiveProcessInfo();
     this.startForegroundProcessPolling();
   }
 
   async create(
     tabId: string,
     container: HTMLElement,
-    config: { fontFamily: string; fontSize: number; scrollback: number },
-    onExit?: (code: number | null) => void
+    config: {
+      fontFamily: string;
+      fontSize: number;
+      scrollback: number;
+      latencyMode: TerminalLatencyMode;
+    },
+    onExit?: (code: number | null) => void,
+    onFirstOutput?: () => void
   ): Promise<void> {
     if (this.terminals.has(tabId)) return;
 
@@ -449,13 +796,26 @@ class TerminalManager {
       cleanupHandlers: [],
       nextInputSeq: 1,
       pendingInputTrace: [],
+      latencyMode: config.latencyMode,
+      pendingInput: [],
+      inputFlushTimer: null,
+      pendingOutput: [],
+      outputWriteInFlight: false,
+      receivedOutput: false,
       predictiveEcho: {
-        foregroundProcessName: null,
+        foregroundProcessInfo: null,
+        foregroundProcessPolled: false,
+        integrationSeen: false,
+        promptReady: false,
         pendingText: "",
+        visible: false,
         anchorX: null,
         marker: null,
         decoration: null,
         decorationRenderDisposable: null,
+        revealTimer: null,
+        renderFrame: null,
+        outputBuffer: "",
       },
       subscribed: false,
     };
@@ -464,21 +824,31 @@ class TerminalManager {
     const dataDisposable = terminal.onData((data) => {
       this.handlePredictiveInput(managed, data);
       const bytes = textEncoder.encode(data);
-      const seq = this.createInputTrace(managed, tabId, "text", bytes.length);
-      terminalWrite(tabId, bytes, seq).catch(console.error);
+      const immediate = shouldFlushInputImmediately(data, managed.latencyMode);
+      if (hasPromptSubmitInput(data)) {
+        this.setPromptReady(managed, false);
+        if (managed.tabId === this.activeTabId) {
+          this.scheduleForegroundProcessRefresh(120);
+          this.scheduleForegroundProcessRefresh(360);
+        }
+      } else if (!isPredictiveEchoCharacter(data) && !BACKSPACE_INPUTS.has(data)) {
+        this.clearPredictiveEcho(managed);
+      }
+      this.queueInput(managed, "text", bytes, immediate);
     });
     this.addCleanup(managed, () => dataDisposable.dispose());
 
     const binaryDisposable = terminal.onBinary((data) => {
       this.clearPredictiveEcho(managed);
+      this.setPromptReady(managed, false);
       const bytes = Uint8Array.from(data, (c) => c.charCodeAt(0));
-      const seq = this.createInputTrace(managed, tabId, "binary", bytes.length);
-      terminalWrite(tabId, bytes, seq).catch(console.error);
+      this.queueInput(managed, "binary", bytes, true);
     });
     this.addCleanup(managed, () => binaryDisposable.dispose());
 
     // Wire resize
     const resizeDisposable = terminal.onResize(({ cols, rows }) => {
+      this.flushPendingInput(managed);
       this.clearPredictiveEcho(managed);
       terminalResize(tabId, cols, rows).catch(console.error);
     });
@@ -488,6 +858,18 @@ class TerminalManager {
       this.clearPredictiveEcho(managed);
     });
     this.addCleanup(managed, () => bufferChangeDisposable.dispose());
+
+    const selectionChangeDisposable = terminal.onSelectionChange(() => {
+      this.clearPredictiveEcho(managed);
+    });
+    this.addCleanup(managed, () => selectionChangeDisposable.dispose());
+
+    const cursorMoveDisposable = terminal.onCursorMove(() => {
+      if (managed.predictiveEcho.pendingText.length > 0) {
+        this.clearPredictiveEcho(managed);
+      }
+    });
+    this.addCleanup(managed, () => cursorMoveDisposable.dispose());
 
     const handleBlur = () => {
       this.clearPredictiveEcho(managed);
@@ -519,10 +901,20 @@ class TerminalManager {
     try {
       await terminalSubscribe(tabId, (output: TerminalOutputData) => {
         if (output.kind === "Data") {
+          const visibleData = this.consumeShellIntegration(managed, output.data);
+          if (visibleData.length === 0) return;
+          if (!managed.receivedOutput) {
+            managed.receivedOutput = true;
+            onFirstOutput?.();
+          }
           this.clearPredictiveEcho(managed);
-          this.completeInputTrace(managed, tabId, output.data.length);
-          terminal.write(output.data);
+          this.completeInputTrace(managed, tabId, visibleData.length);
+          this.queueOutput(managed, visibleData);
         } else if (output.kind === "Exited") {
+          this.stopPendingInputFlush(managed);
+          managed.pendingInput = [];
+          managed.pendingOutput = [];
+          managed.outputWriteInFlight = false;
           this.clearPredictiveEcho(managed);
           this.updateForegroundProcessName(managed, null);
           managed.pendingInputTrace = [];
@@ -530,6 +922,18 @@ class TerminalManager {
         }
       });
       managed.subscribed = true;
+      // Sync PTY to actual xterm.js viewport size (PTY starts at 80×24)
+      terminalResize(tabId, terminal.cols, terminal.rows).catch(console.error);
+      // Prime foreground process now that PTY is alive (initial poll races with spawn)
+      if (this.activeTabId === tabId) {
+        terminalGetForegroundProcess(tabId)
+          .then((info) => {
+            if (this.activeTabId === tabId) {
+              this.updateForegroundProcessName(managed, info ?? null);
+            }
+          })
+          .catch(() => {});
+      }
     } catch (e) {
       console.error("Failed to subscribe to PTY:", e);
     }
@@ -542,8 +946,13 @@ class TerminalManager {
     if (this.activeTabId === tabId) {
       this.activeTabId = null;
       this.stopForegroundProcessPolling();
+      this.setActiveProcessInfo(null);
     }
 
+    this.stopPendingInputFlush(managed);
+    managed.pendingInput = [];
+    managed.pendingOutput = [];
+    managed.outputWriteInFlight = false;
     this.clearPredictiveEcho(managed);
     this.disposeManagedResources(managed);
     managed.resizeObserver.disconnect();
@@ -597,6 +1006,23 @@ class TerminalManager {
     return this.terminals.has(tabId);
   }
 
+  hasReceivedOutput(tabId: string): boolean {
+    return this.terminals.get(tabId)?.receivedOutput ?? false;
+  }
+
+  getActiveProcessInfo(): ProcessInfo | null {
+    return this.activeProcessInfo;
+  }
+
+  subscribeActiveProcess(listener: ActiveProcessListener): () => void {
+    this.activeProcessListeners.add(listener);
+    listener(this.activeProcessInfo);
+
+    return () => {
+      this.activeProcessListeners.delete(listener);
+    };
+  }
+
   updateAllFontSize(size: number): void {
     for (const [, managed] of this.terminals) {
       managed.terminal.options.fontSize = size;
@@ -628,8 +1054,18 @@ class TerminalManager {
     }
   }
 
+  updateAllLatencyMode(mode: TerminalLatencyMode): void {
+    for (const [, managed] of this.terminals) {
+      managed.latencyMode = mode;
+      if (mode === "compatible") {
+        this.flushPendingInput(managed);
+      }
+    }
+  }
+
   destroyAll(): void {
     this.activeTabId = null;
+    this.setActiveProcessInfo(null);
     this.stopForegroundProcessPolling();
     for (const tabId of this.terminals.keys()) {
       this.destroy(tabId);

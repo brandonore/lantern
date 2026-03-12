@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>sh.lantern.NativeLinux</id>
+  <name>Lantern Native</name>
+  <summary>Native Linux Lantern terminal client</summary>
+  <metadata_license>MIT</metadata_license>
+  <project_license>MIT</project_license>
+  <developer id="sh.lantern">
+    <name>Lantern</name>
+  </developer>
+  <icon type="stock">sh.lantern.NativeLinux</icon>
+  <launchable type="desktop-id">sh.lantern.NativeLinux.desktop</launchable>
+  <description>
+    <p>
+      Lantern Native is the Linux-native GTK4 and VTE frontend for Lantern,
+      focused on low-latency terminal work with repos, worktrees, tabs, and split panes.
+    </p>
+  </description>
+  <categories>
+    <category>Development</category>
+    <category>Utility</category>
+    <category>TerminalEmulator</category>
+  </categories>
+  <keywords>
+    <keyword>terminal</keyword>
+    <keyword>shell</keyword>
+    <keyword>git</keyword>
+    <keyword>worktree</keyword>
+  </keywords>
+</component>

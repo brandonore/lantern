@@ -22,12 +22,28 @@ export function TerminalViewport() {
     }
   );
   const activeRepoId = useAppStore((s) => s.activeRepoId);
+  const setActiveRepo = useAppStore((s) => s.setActiveRepo);
+  const setActiveTab = useAppStore((s) => s.setActiveTab);
   const [exitedTabs, setExitedTabs] = useState<
     Map<string, number | null>
   >(new Map());
 
   const activeRepo = repos.find((r) => r.id === activeRepoId);
-  const activeTabId = activeRepo?.activeTabId ?? null;
+  const activeTabId =
+    activeRepo?.tabs.find((tab) => tab.id === activeRepo.activeTabId)?.id ??
+    activeRepo?.tabs[0]?.id ??
+    null;
+
+  useEffect(() => {
+    if (repos.length === 0) return;
+    if (!activeRepo) {
+      setActiveRepo(repos[0].id);
+      return;
+    }
+    if (activeTabId && activeTabId !== activeRepo.activeTabId) {
+      setActiveTab(activeRepo.id, activeTabId);
+    }
+  }, [activeRepo, activeTabId, repos, setActiveRepo, setActiveTab]);
 
   useEffect(() => {
     terminalManager.setActiveTab(activeTabId);
@@ -96,8 +112,9 @@ export function TerminalViewport() {
       <SearchBar />
       {repos.flatMap((repo) =>
         repo.tabs.map((tab) => {
-          const isVisible =
-            repo.id === activeRepoId && tab.id === repo.activeTabId;
+          const visibleTabId =
+            repo.id === activeRepoId ? activeTabId : repo.activeTabId;
+          const isVisible = repo.id === activeRepoId && tab.id === visibleTabId;
           const exitCode = exitedTabs.get(tab.id);
           const hasExited = exitedTabs.has(tab.id);
 
