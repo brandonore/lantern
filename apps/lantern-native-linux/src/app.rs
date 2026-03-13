@@ -989,27 +989,12 @@ impl NativeApp {
                 .iter()
                 .any(|group_id| group_id == &group.group_id);
 
-            // Separator between groups (not before the first)
-            if group_index > 0 {
-                let separator_row = gtk::ListBoxRow::new();
-                separator_row.set_activatable(false);
-                separator_row.set_selectable(false);
-                let sep = gtk::Separator::new(gtk::Orientation::Horizontal);
-                sep.set_margin_top(4);
-                sep.set_margin_bottom(4);
-                sep.set_margin_start(8);
-                sep.set_margin_end(8);
-                sep.set_opacity(0.3);
-                separator_row.set_child(Some(&sep));
-                self.sidebar_list.append(&separator_row);
-            }
-
             // Group header row (non-activatable)
             let header_row = gtk::ListBoxRow::new();
             header_row.set_activatable(false);
             header_row.set_selectable(false);
             let header_box = gtk::Box::new(gtk::Orientation::Horizontal, 4);
-            header_box.set_margin_top(if group_index == 0 { 4 } else { 2 });
+            header_box.set_margin_top(if group_index == 0 { 4 } else { 12 });
             header_box.set_margin_bottom(2);
             header_box.set_margin_end(4);
 
