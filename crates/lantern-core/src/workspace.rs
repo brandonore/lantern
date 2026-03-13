@@ -116,6 +116,13 @@ impl WorkspaceState {
         self.set_active_repo(repo.id.as_str());
     }
 
+    pub fn update_repo(&mut self, repo: crate::models::Repo) {
+        if let Some(existing) = self.repos.iter_mut().find(|r| r.repo.id == repo.id) {
+            existing.repo = repo;
+            sort_repos(&mut self.repos);
+        }
+    }
+
     pub fn remove_repo(&mut self, repo_id: &str) {
         self.repos.retain(|repo| repo.repo.id != repo_id);
         sort_repos(&mut self.repos);

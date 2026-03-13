@@ -1522,9 +1522,37 @@ impl NativeApp {
             .filter(|entry| entry.path != repo.path)
             .map(|entry| entry.path.clone())
             .collect::<Vec<_>>();
-        let Ok(Some(group_id)) = db::find_group_id_by_paths(&self.db, &sibling_paths) else {
-            return repo;
+
+        let group_id = match db::find_group_id_by_paths(&self.db, &sibling_paths) {
+            Ok(Some(id)) => id,
+            _ => {
+                // No existing group — check if any sibling repo exists ungrouped
+                let sibling = sibling_paths.iter().find_map(|path| {
+                    db::find_repo_id_by_path(&self.db, path).ok().flatten()
+                });
+                let Some(sibling_id) = sibling else {
+                    return repo;
+                };
+                let new_group_id = Uuid::new_v4().to_string();
+                let sibling_is_main = worktree_info
+                    .entries
+                    .iter()
+                    .any(|e| sibling_paths.contains(&e.path) && e.is_main);
+                if db::set_repo_group(&self.db, &sibling_id, &new_group_id, sibling_is_main)
+                    .is_err()
+                {
+                    return repo;
+                }
+                // Update the sibling's in-memory state in the workspace
+                if let Ok(Some(updated_sibling)) = db::list_repos(&self.db).map(|repos| {
+                    repos.into_iter().find(|r| r.id == sibling_id)
+                }) {
+                    self.workspace.borrow_mut().update_repo(updated_sibling);
+                }
+                new_group_id
+            }
         };
+
         let is_main = worktree_info
             .entries
             .iter()
@@ -2774,7 +2802,7 @@ impl NativeApp {
                 .iter()
                 .find(|repo| repo.repo.id == repo_id)
                 .ok_or_else(|| LanternError::RepoNotFound(repo_id.to_string()))?;
-            next_session_title(repo.sessions.len())
+            next_session_title(&repo.sessions)
         };
 
         let session = db::create_session(&self.db, repo_id, title.as_str(), None)?;
@@ -3698,8 +3726,14 @@ fn normalized_session_title(raw_title: &str) -> Option<String> {
     Some(title.to_string())
 }
 
-fn next_session_title(existing_sessions: usize) -> String {
-    format!("Terminal {}", existing_sessions + 1)
+fn next_session_title(existing_sessions: &[lantern_core::TerminalSession]) -> String {
+    let max_n = existing_sessions
+        .iter()
+        .filter_map(|s| s.title.strip_prefix("Terminal "))
+        .filter_map(|n| n.parse::<usize>().ok())
+        .max()
+        .unwrap_or(0);
+    format!("Terminal {}", max_n + 1)
 }
 
 fn status_text(
@@ -3901,9 +3935,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn next_session_title_uses_one_based_index() {
-        assert_eq!(next_session_title(0), "Terminal 1");
-        assert_eq!(next_session_title(3), "Terminal 4");
+    fn next_session_title_avoids_duplicates() {
+        use lantern_core::TerminalSession;
+
+        let make = |title: &str| TerminalSession {
+            id: String::new(),
+            repo_id: String::new(),
+            title: title.to_string(),
+            shell: None,
+            sort_order: 0,
+        };
+
+        assert_eq!(next_session_title(&[]), "Terminal 1");
+        assert_eq!(
+            next_session_title(&[make("Terminal 1"), make("Terminal 3")]),
+            "Terminal 4"
+        );
+        assert_eq!(
+            next_session_title(&[make("Terminal 2")]),
+            "Terminal 3"
+        );
+        assert_eq!(
+            next_session_title(&[make("custom name")]),
+            "Terminal 1"
+        );
     }
 
     #[test]

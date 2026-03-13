@@ -332,6 +332,19 @@ pub fn find_group_id_by_paths(
     Ok(None)
 }
 
+pub fn find_repo_id_by_path(conn: &DbConn, path: &str) -> Result<Option<String>, LanternError> {
+    let db = conn.lock().unwrap();
+    match db.query_row(
+        "SELECT id FROM repo WHERE path = ?1",
+        params![path],
+        |row| row.get(0),
+    ) {
+        Ok(id) => Ok(Some(id)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
 pub fn set_repo_group(
     conn: &DbConn,
     repo_id: &str,
