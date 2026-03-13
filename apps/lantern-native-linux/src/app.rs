@@ -216,7 +216,12 @@ impl NativeApp {
              listbox.navigation-sidebar row:hover .remove-button { opacity: 1; } \
              listbox.navigation-sidebar row .sidebar-move-button { opacity: 0; transition: opacity 150ms; } \
              listbox.navigation-sidebar row:hover .sidebar-move-button { opacity: 0.7; } \
-             listbox.navigation-sidebar row .sidebar-move-button image { -gtk-icon-size: 14px; }",
+             listbox.navigation-sidebar row .sidebar-move-button image { -gtk-icon-size: 14px; } \
+             .sidebar-active-row { \
+               background-color: alpha(@accent_bg_color, 0.15); \
+               border-radius: 8px; \
+               border-left: 3px solid @accent_bg_color; \
+             }",
         );
         gtk::style_context_add_provider_for_display(
             &gtk::gdk::Display::default().unwrap(),
@@ -1070,10 +1075,14 @@ impl NativeApp {
                     row.set_widget_name(&repo.repo.id);
 
                     let row_box = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-                    row_box.set_margin_start(8);
+                    row_box.set_margin_start(4);
                     row_box.set_margin_end(4);
-                    row_box.set_margin_top(3);
-                    row_box.set_margin_bottom(3);
+                    row_box.set_margin_top(2);
+                    row_box.set_margin_bottom(2);
+                    if is_active {
+                        row_box.add_css_class("sidebar-active-row");
+                        row_box.set_margin_start(4);
+                    }
 
                     // Icon: main repo gets folder, worktree branches get branch icon
                     let icon_name = if group.is_worktree_group && !repo.repo.is_default {
