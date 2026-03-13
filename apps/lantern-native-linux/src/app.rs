@@ -217,9 +217,13 @@ impl NativeApp {
              listbox.navigation-sidebar row .sidebar-move-button { opacity: 0; transition: opacity 150ms; } \
              listbox.navigation-sidebar row:hover .sidebar-move-button { opacity: 0.7; } \
              listbox.navigation-sidebar row .sidebar-move-button image { -gtk-icon-size: 14px; } \
-             listbox.navigation-sidebar row.sidebar-active-row { \
+             .sidebar-active-bg { \
                background-color: alpha(@accent_bg_color, 0.12); \
-               border-left: 3px solid @accent_bg_color; \
+               border-radius: 6px; \
+             } \
+             .sidebar-accent-bar { \
+               background-color: @accent_bg_color; \
+               border-radius: 2px; \
              }",
         );
         gtk::style_context_add_provider_for_display(
@@ -1072,15 +1076,30 @@ impl NativeApp {
 
                     let row = gtk::ListBoxRow::new();
                     row.set_widget_name(&repo.repo.id);
+
+                    let outer_box = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+                    outer_box.set_margin_start(4);
+                    outer_box.set_margin_end(4);
+                    outer_box.set_margin_top(2);
+                    outer_box.set_margin_bottom(2);
+
                     if is_active {
-                        row.add_css_class("sidebar-active-row");
+                        let accent_bar = gtk::Box::new(gtk::Orientation::Vertical, 0);
+                        accent_bar.set_width_request(3);
+                        accent_bar.add_css_class("sidebar-accent-bar");
+                        accent_bar.set_margin_end(0);
+                        outer_box.append(&accent_bar);
                     }
 
                     let row_box = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-                    row_box.set_margin_start(8);
+                    row_box.set_margin_start(if is_active { 5 } else { 8 });
                     row_box.set_margin_end(4);
-                    row_box.set_margin_top(3);
-                    row_box.set_margin_bottom(3);
+                    row_box.set_margin_top(4);
+                    row_box.set_margin_bottom(4);
+                    row_box.set_hexpand(true);
+                    if is_active {
+                        outer_box.add_css_class("sidebar-active-bg");
+                    }
 
                     // Icon: main repo gets folder, worktree branches get branch icon
                     let icon_name = if group.is_worktree_group && !repo.repo.is_default {
@@ -1148,7 +1167,8 @@ impl NativeApp {
                     });
                     row_box.append(&remove_button);
 
-                    row.set_child(Some(&row_box));
+                    outer_box.append(&row_box);
+                    row.set_child(Some(&outer_box));
                     self.sidebar_list.append(&row);
                 }
             }
