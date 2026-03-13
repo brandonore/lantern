@@ -213,7 +213,10 @@ impl NativeApp {
         let css = gtk::CssProvider::new();
         css.load_from_data(
             "listbox.navigation-sidebar row .remove-button { opacity: 0; transition: opacity 150ms; } \
-             listbox.navigation-sidebar row:hover .remove-button { opacity: 1; }",
+             listbox.navigation-sidebar row:hover .remove-button { opacity: 1; } \
+             listbox.navigation-sidebar row .sidebar-move-button { opacity: 0; transition: opacity 150ms; } \
+             listbox.navigation-sidebar row:hover .sidebar-move-button { opacity: 0.7; } \
+             listbox.navigation-sidebar row .sidebar-move-button image { -gtk-icon-size: 14px; }",
         );
         gtk::style_context_add_provider_for_display(
             &gtk::gdk::Display::default().unwrap(),
@@ -979,38 +982,58 @@ impl NativeApp {
             return;
         }
 
-        for group in sidebar_groups(&workspace.repos) {
+        for (group_index, group) in sidebar_groups(&workspace.repos).iter().enumerate() {
             let collapsed = workspace
                 .layout
                 .collapsed_group_ids
                 .iter()
                 .any(|group_id| group_id == &group.group_id);
 
+            // Separator between groups (not before the first)
+            if group_index > 0 {
+                let separator_row = gtk::ListBoxRow::new();
+                separator_row.set_activatable(false);
+                separator_row.set_selectable(false);
+                let sep = gtk::Separator::new(gtk::Orientation::Horizontal);
+                sep.set_margin_top(4);
+                sep.set_margin_bottom(4);
+                sep.set_margin_start(8);
+                sep.set_margin_end(8);
+                sep.set_opacity(0.3);
+                separator_row.set_child(Some(&sep));
+                self.sidebar_list.append(&separator_row);
+            }
+
             // Group header row (non-activatable)
             let header_row = gtk::ListBoxRow::new();
             header_row.set_activatable(false);
             header_row.set_selectable(false);
-            let header_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-            header_box.set_margin_top(8);
+            let header_box = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+            header_box.set_margin_top(if group_index == 0 { 4 } else { 2 });
             header_box.set_margin_bottom(2);
             header_box.set_margin_end(4);
 
-            let collapse_label = gtk::Label::new(Some(
-                format!(
-                    "{} {}",
-                    if collapsed { "▸" } else { "▾" },
-                    group.name.to_uppercase()
-                )
-                .as_str(),
-            ));
-            collapse_label.set_xalign(0.0);
-            collapse_label.set_hexpand(true);
-            collapse_label.add_css_class("dim-label");
-            collapse_label.set_attributes(Some(&small_attrs));
+            let collapse_icon = gtk::Image::from_icon_name(if collapsed {
+                "pan-end-symbolic"
+            } else {
+                "pan-down-symbolic"
+            });
+            collapse_icon.set_pixel_size(12);
+            collapse_icon.add_css_class("dim-label");
+
+            let header_label = gtk::Label::new(Some(group.name.to_uppercase().as_str()));
+            header_label.set_xalign(0.0);
+            header_label.set_hexpand(true);
+            header_label.add_css_class("dim-label");
+            header_label.set_attributes(Some(&small_attrs));
+
+            let collapse_content = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+            collapse_content.append(&collapse_icon);
+            collapse_content.append(&header_label);
 
             let collapse_button = gtk::Button::new();
             collapse_button.add_css_class("flat");
-            collapse_button.set_child(Some(&collapse_label));
+            collapse_button.set_child(Some(&collapse_content));
             collapse_button.set_hexpand(true);
             let weak_self = Rc::downgrade(self);
             let group_id = group.group_id.clone();
@@ -1024,6 +1047,7 @@ impl NativeApp {
 
             let move_up_button = gtk::Button::from_icon_name("go-up-symbolic");
             move_up_button.add_css_class("flat");
+            move_up_button.add_css_class("sidebar-move-button");
             move_up_button.set_tooltip_text(Some("Move Group Up"));
             let weak_self = Rc::downgrade(self);
             let group_id = group.group_id.clone();
@@ -1037,6 +1061,7 @@ impl NativeApp {
 
             let move_down_button = gtk::Button::from_icon_name("go-down-symbolic");
             move_down_button.add_css_class("flat");
+            move_down_button.add_css_class("sidebar-move-button");
             move_down_button.set_tooltip_text(Some("Move Group Down"));
             let weak_self = Rc::downgrade(self);
             let group_id = group.group_id.clone();
@@ -1060,16 +1085,30 @@ impl NativeApp {
                     row.set_widget_name(&repo.repo.id);
 
                     let row_box = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-                    row_box.set_margin_start(12);
+                    row_box.set_margin_start(8);
                     row_box.set_margin_end(4);
-                    row_box.set_margin_top(2);
-                    row_box.set_margin_bottom(2);
+                    row_box.set_margin_top(3);
+                    row_box.set_margin_bottom(3);
 
-                    let repo_content = gtk::Box::new(gtk::Orientation::Vertical, 2);
+                    // Icon: main repo gets folder, worktree branches get branch icon
+                    let icon_name = if group.is_worktree_group && !repo.repo.is_default {
+                        "branch-symbolic"
+                    } else {
+                        "folder-open-symbolic"
+                    };
+                    let repo_icon = gtk::Image::from_icon_name(icon_name);
+                    repo_icon.set_pixel_size(16);
+                    repo_icon.set_valign(gtk::Align::Center);
+                    repo_icon.set_opacity(if is_active { 0.9 } else { 0.5 });
+                    if is_active {
+                        repo_icon.add_css_class("accent");
+                    }
+                    row_box.append(&repo_icon);
+
+                    let repo_content = gtk::Box::new(gtk::Orientation::Vertical, 1);
                     repo_content.set_halign(gtk::Align::Start);
                     repo_content.set_hexpand(true);
 
-                    let title_row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
                     let repo_name = gtk::Label::new(Some(repo.repo.name.as_str()));
                     repo_name.set_xalign(0.0);
                     repo_name.set_ellipsize(gtk::pango::EllipsizeMode::End);
@@ -1077,15 +1116,7 @@ impl NativeApp {
                     if is_active {
                         repo_name.add_css_class("accent");
                     }
-                    title_row.append(&repo_name);
-                    if group.is_worktree_group && repo.repo.is_default {
-                        let default_badge = gtk::Label::new(Some("default"));
-                        default_badge.add_css_class("caption");
-                        default_badge.add_css_class("dim-label");
-                        default_badge.set_attributes(Some(&small_attrs));
-                        title_row.append(&default_badge);
-                    }
-                    repo_content.append(&title_row);
+                    repo_content.append(&repo_name);
 
                     let git_meta = git_info_by_repo
                         .get(repo.repo.id.as_str())
