@@ -2114,6 +2114,104 @@ impl NativeApp {
             self.git_info_by_repo.replace(repo_git_info);
             self.populate_sidebar();
         }
+
+        self.discover_new_worktrees();
+    }
+
+    fn discover_new_worktrees(self: &Rc<Self>) {
+        let known_paths: HashSet<String> = self
+            .workspace
+            .borrow()
+            .repos
+            .iter()
+            .map(|r| r.repo.path.clone())
+            .collect();
+
+        let repo_paths: Vec<String> = self
+            .workspace
+            .borrow()
+            .repos
+            .iter()
+            .map(|r| r.repo.path.clone())
+            .collect();
+
+        let mut added_any = false;
+        for path in &repo_paths {
+            let Some(worktree_info) = git::detect_worktree_info(path.as_str()) else {
+                continue;
+            };
+
+            let new_entries: Vec<_> = worktree_info
+                .entries
+                .iter()
+                .filter(|entry| !known_paths.contains(&entry.path))
+                .collect();
+
+            if new_entries.is_empty() {
+                continue;
+            }
+
+            // Determine or create the group_id for this worktree family
+            let all_paths: Vec<String> = worktree_info
+                .entries
+                .iter()
+                .map(|e| e.path.clone())
+                .collect();
+            let group_id = db::find_group_id_by_paths(&self.db, &all_paths)
+                .ok()
+                .flatten()
+                .unwrap_or_else(|| {
+                    let new_group_id = Uuid::new_v4().to_string();
+                    // Assign the new group to all existing siblings that lack one
+                    for entry in &worktree_info.entries {
+                        if known_paths.contains(&entry.path) {
+                            if let Ok(Some(repo_id)) =
+                                db::find_repo_id_by_path(&self.db, &entry.path)
+                            {
+                                let _ = db::set_repo_group(
+                                    &self.db,
+                                    &repo_id,
+                                    &new_group_id,
+                                    entry.is_main,
+                                );
+                            }
+                        }
+                    }
+                    new_group_id
+                });
+
+            for entry in &new_entries {
+                match db::add_repo_grouped(
+                    &self.db,
+                    &entry.path,
+                    Some(&group_id),
+                    entry.is_main,
+                ) {
+                    Ok(repo) => {
+                        let repo_id = repo.id.clone();
+                        self.workspace.borrow_mut().add_repo(repo);
+                        let _ = self.create_session_for_repo(&repo_id);
+                        added_any = true;
+                    }
+                    Err(LanternError::RepoAlreadyExists(_))
+                    | Err(LanternError::PathNotFound(_)) => continue,
+                    Err(_) => continue,
+                }
+            }
+        }
+
+        if added_any {
+            // Reload all repos from DB so group_id changes are reflected
+            if let Ok(repos) = db::list_repos(&self.db) {
+                for repo in repos {
+                    self.workspace.borrow_mut().update_repo(repo);
+                }
+            }
+            self.populate_sidebar();
+            self.rebuild_tabs();
+            self.show_active_terminal();
+            self.schedule_layout_persist();
+        }
     }
 
     fn schedule_git_refresh(self: &Rc<Self>) {
