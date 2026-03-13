@@ -87,6 +87,7 @@ struct NativeApp {
     repo_split_state: RefCell<HashMap<String, NativeSplitState>>,
     closing_session_ids: RefCell<HashSet<String>>,
     rebuilding_tabs: Cell<bool>,
+    paste_in_progress: Cell<bool>,
     sidebar_theme_css_provider: gtk::CssProvider,
 }
 
@@ -336,6 +337,7 @@ impl NativeApp {
             repo_split_state: RefCell::new(repo_split_state),
             closing_session_ids: RefCell::new(HashSet::new()),
             rebuilding_tabs: Cell::new(false),
+            paste_in_progress: Cell::new(false),
             sidebar_theme_css_provider,
         });
 
@@ -687,6 +689,7 @@ impl NativeApp {
         });
 
         let key_controller = gtk::EventControllerKey::new();
+        key_controller.set_propagation_phase(gtk::PropagationPhase::Capture);
         let weak_self = Rc::downgrade(self);
         key_controller.connect_key_pressed(move |_, key, _, state| {
             let Some(native_app) = weak_self.upgrade() else {
@@ -694,7 +697,7 @@ impl NativeApp {
             };
 
             if state.contains(gtk::gdk::ModifierType::CONTROL_MASK)
-                && !state.contains(gtk::gdk::ModifierType::SHIFT_MASK)
+                && state.contains(gtk::gdk::ModifierType::SHIFT_MASK)
                 && key
                     .to_unicode()
                     .map(|character| character.eq_ignore_ascii_case(&'t'))
@@ -705,7 +708,7 @@ impl NativeApp {
             }
 
             if state.contains(gtk::gdk::ModifierType::CONTROL_MASK)
-                && !state.contains(gtk::gdk::ModifierType::SHIFT_MASK)
+                && state.contains(gtk::gdk::ModifierType::SHIFT_MASK)
                 && key
                     .to_unicode()
                     .map(|character| character.eq_ignore_ascii_case(&'w'))
@@ -881,6 +884,17 @@ impl NativeApp {
                     .unwrap_or(false)
             {
                 native_app.paste_clipboard_into_active_terminal();
+                return gtk::glib::Propagation::Stop;
+            }
+
+            if state.contains(gtk::gdk::ModifierType::CONTROL_MASK)
+                && !state.contains(gtk::gdk::ModifierType::SHIFT_MASK)
+                && key
+                    .to_unicode()
+                    .map(|character| character.eq_ignore_ascii_case(&'v'))
+                    .unwrap_or(false)
+            {
+                native_app.smart_paste();
                 return gtk::glib::Propagation::Stop;
             }
 
@@ -2208,10 +2222,61 @@ impl NativeApp {
         }
     }
 
-    fn paste_clipboard_into_active_terminal(&self) {
+    fn paste_clipboard_into_active_terminal(self: &Rc<Self>) {
         if let Some(surface) = self.active_surface() {
+            self.paste_in_progress.set(true);
             surface.terminal().paste_clipboard();
+            let weak_self = Rc::downgrade(self);
+            gtk::glib::idle_add_local_once(move || {
+                if let Some(native_app) = weak_self.upgrade() {
+                    native_app.paste_in_progress.set(false);
+                }
+            });
         }
+    }
+
+    fn smart_paste(self: &Rc<Self>) {
+        let Some(display) = gtk::gdk::Display::default() else {
+            return;
+        };
+        let clipboard = display.clipboard();
+        let formats = clipboard.formats();
+
+        if formats.contains_type(gtk::gdk::Texture::static_type()) {
+            self.paste_image_from_clipboard(&clipboard);
+        } else {
+            self.paste_clipboard_into_active_terminal();
+        }
+    }
+
+    fn paste_image_from_clipboard(self: &Rc<Self>, clipboard: &gtk::gdk::Clipboard) {
+        let weak_self = Rc::downgrade(self);
+        clipboard.read_texture_async(
+            gtk::gio::Cancellable::NONE,
+            move |result| {
+                let Some(native_app) = weak_self.upgrade() else {
+                    return;
+                };
+                match result {
+                    Ok(Some(texture)) => {
+                        let filename = format!("lantern-paste-{}.png", Uuid::new_v4());
+                        let path = std::path::Path::new("/tmp").join(&filename);
+                        if let Err(err) = texture.save_to_png(&path) {
+                            eprintln!("lantern: failed to save clipboard image: {err}");
+                            native_app.paste_clipboard_into_active_terminal();
+                            return;
+                        }
+                        if let Some(surface) = native_app.active_surface() {
+                            let path_str = path.to_string_lossy();
+                            surface.terminal().feed_child(path_str.as_bytes());
+                        }
+                    }
+                    _ => {
+                        native_app.paste_clipboard_into_active_terminal();
+                    }
+                }
+            },
+        );
     }
 
     fn prompt_rename_active_tab(self: &Rc<Self>) {
@@ -3096,6 +3161,9 @@ impl NativeApp {
     }
 
     fn notify_session_bell(&self, session_id: &str) {
+        if self.paste_in_progress.get() {
+            return;
+        }
         let Some(surface) = self.host.borrow().surface(session_id) else {
             self.show_toast("Terminal bell");
             return;
