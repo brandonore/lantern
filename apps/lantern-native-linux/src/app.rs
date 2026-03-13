@@ -904,6 +904,11 @@ impl NativeApp {
             }
 
             if key == gtk::gdk::Key::Escape {
+                if let Some(surface) = native_app.active_surface() {
+                    if surface.terminal().has_focus() {
+                        return gtk::glib::Propagation::Proceed;
+                    }
+                }
                 native_app.focus_active_terminal();
                 return gtk::glib::Propagation::Stop;
             }
