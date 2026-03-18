@@ -2,13 +2,13 @@ use crate::error::LanternError;
 use crate::models::{AppLayout, NativeSplitOrientation, NativeSplitState, Repo, TerminalSession};
 use crate::paths;
 use rusqlite::{params, Connection};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
 pub type DbConn = Arc<Mutex<Connection>>;
-const CURRENT_SCHEMA_VERSION: i32 = 5;
+const CURRENT_SCHEMA_VERSION: i32 = 6;
 
 pub fn init_db(path: Option<PathBuf>) -> Result<DbConn, LanternError> {
     let db_path = path.unwrap_or_else(paths::db_file);
@@ -67,6 +67,10 @@ fn create_tables(conn: &Connection) -> Result<(), LanternError> {
             divider_position INTEGER,
             secondary_divider_position INTEGER,
             divider_positions TEXT NOT NULL DEFAULT '[]'
+        );
+
+        CREATE TABLE IF NOT EXISTS hidden_repo_path (
+            path TEXT PRIMARY KEY
         );
 
         CREATE TABLE IF NOT EXISTS schema_version (
@@ -656,6 +660,32 @@ pub fn delete_native_split_state(conn: &DbConn, repo_id: &str) -> Result<(), Lan
     Ok(())
 }
 
+pub fn hide_repo_path(conn: &DbConn, path: &str) -> Result<(), LanternError> {
+    let db = conn.lock().unwrap();
+    db.execute(
+        "INSERT OR IGNORE INTO hidden_repo_path (path) VALUES (?1)",
+        params![path],
+    )?;
+    Ok(())
+}
+
+pub fn unhide_repo_path(conn: &DbConn, path: &str) -> Result<(), LanternError> {
+    let db = conn.lock().unwrap();
+    db.execute(
+        "DELETE FROM hidden_repo_path WHERE path = ?1",
+        params![path],
+    )?;
+    Ok(())
+}
+
+pub fn list_hidden_paths(conn: &DbConn) -> Result<HashSet<String>, LanternError> {
+    let db = conn.lock().unwrap();
+    let mut stmt = db.prepare("SELECT path FROM hidden_repo_path")?;
+    let rows = stmt.query_map([], |row| row.get(0))?;
+    rows.collect::<Result<HashSet<_>, _>>()
+        .map_err(Into::into)
+}
+
 fn parse_native_split_orientation(value: &str) -> NativeSplitOrientation {
     match value {
         "vertical" => NativeSplitOrientation::Vertical,
@@ -999,5 +1029,29 @@ mod tests {
                 divider_positions: vec![420, 260],
             })
         );
+    }
+
+    #[test]
+    fn hidden_repo_path_hides_and_unhides() {
+        let dir = tempdir().unwrap();
+        let conn = init_db(Some(dir.path().join("lantern.db"))).unwrap();
+
+        hide_repo_path(&conn, "/tmp/hidden-repo").unwrap();
+        hide_repo_path(&conn, "/tmp/another-hidden").unwrap();
+
+        let hidden = list_hidden_paths(&conn).unwrap();
+        assert!(hidden.contains("/tmp/hidden-repo"));
+        assert!(hidden.contains("/tmp/another-hidden"));
+        assert_eq!(hidden.len(), 2);
+
+        // Duplicate insert is ignored
+        hide_repo_path(&conn, "/tmp/hidden-repo").unwrap();
+        assert_eq!(list_hidden_paths(&conn).unwrap().len(), 2);
+
+        unhide_repo_path(&conn, "/tmp/hidden-repo").unwrap();
+        let hidden = list_hidden_paths(&conn).unwrap();
+        assert!(!hidden.contains("/tmp/hidden-repo"));
+        assert!(hidden.contains("/tmp/another-hidden"));
+        assert_eq!(hidden.len(), 1);
     }
 }

@@ -14,6 +14,7 @@ pub struct TerminalSurface {
     child_pid: Rc<Cell<Option<u32>>>,
     launch_error: Rc<RefCell<Option<String>>>,
     terminal: vte::Terminal,
+    view: gtk::ScrolledWindow,
 }
 
 impl TerminalSurface {
@@ -21,6 +22,9 @@ impl TerminalSurface {
         let terminal = vte::Terminal::new();
         terminal.set_hexpand(true);
         terminal.set_vexpand(true);
+        terminal.set_margin_start(4);
+        terminal.set_margin_top(4);
+        terminal.set_margin_end(4);
         terminal.set_scrollback_lines(config.scrollback_lines as i64);
 
         let font = gtk::pango::FontDescription::from_string(&format!(
@@ -28,6 +32,13 @@ impl TerminalSurface {
             config.font_family, config.font_size
         ));
         terminal.set_font_desc(Some(&font));
+        let view = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vscrollbar_policy(gtk::PolicyType::Automatic)
+            .child(&terminal)
+            .hexpand(true)
+            .vexpand(true)
+            .build();
         theme::apply_terminal_theme(
             &terminal,
             config.theme.as_str(),
@@ -52,7 +63,7 @@ impl TerminalSurface {
             vte::PtyFlags::DEFAULT,
             Some(repo.repo.path.as_str()),
             &argv,
-            &[],
+            &["COLORTERM=truecolor", "TERM=xterm-256color"],
             gtk::glib::SpawnFlags::DEFAULT,
             || {},
             -1,
@@ -80,6 +91,7 @@ impl TerminalSurface {
             child_pid,
             launch_error,
             terminal,
+            view,
         }
     }
 
@@ -114,11 +126,18 @@ impl TerminalSurface {
         &self.terminal
     }
 
+    pub fn view(&self) -> &gtk::ScrolledWindow {
+        &self.view
+    }
+
     pub fn set_fallback_title(&self, title: &str) {
         self.fallback_title.replace(title.to_string());
     }
 
     pub fn apply_config(&self, config: &UserConfig) {
+        self.terminal.set_margin_start(4);
+        self.terminal.set_margin_top(4);
+        self.terminal.set_margin_end(4);
         self.terminal
             .set_scrollback_lines(config.scrollback_lines as i64);
         let font = gtk::pango::FontDescription::from_string(&format!(

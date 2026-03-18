@@ -53,6 +53,7 @@ struct NativeApp {
     // Tab management
     tab_view: adw::TabView,
     tab_bar_widget: adw::TabBar,
+    surface_parking_box: gtk::Box,
     // Search
     search_revealer: gtk::Revealer,
     search_entry: gtk::SearchEntry,
@@ -107,6 +108,24 @@ impl NativeApp {
         if workspace.layout.window_maximized {
             window.maximize();
         }
+
+        // Write pre-sized icons for dock/taskbar/search (installed via .desktop Icon= field).
+        // No set_default_icon_name — KDE shows that as a duplicate in the window decoration;
+        // the header bar gets its own custom icon widget instead.
+        {
+            let xdg_icons = gtk::glib::user_data_dir().join("icons/hicolor");
+            for (size, bytes) in [
+                ("256x256", &include_bytes!("../assets/lantern_logo_256.png")[..]),
+                ("128x128", &include_bytes!("../assets/lantern_logo_128.png")[..]),
+                ("32x32", &include_bytes!("../assets/lantern_logo_32.png")[..]),
+            ] {
+                let dir = xdg_icons.join(format!("{size}/apps"));
+                if std::fs::create_dir_all(&dir).is_ok() {
+                    let _ = std::fs::write(dir.join("sh.lantern.NativeLinux.png"), bytes);
+                }
+            }
+        }
+
         let sidebar_width = workspace.layout.sidebar_width;
         let sidebar_collapsed = workspace.layout.sidebar_collapsed;
 
@@ -249,6 +268,10 @@ impl NativeApp {
 
         let tab_bar_widget = adw::TabBar::new();
         tab_bar_widget.set_view(Some(&tab_view));
+        tab_bar_widget.set_autohide(false);
+
+        let surface_parking_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        surface_parking_box.set_visible(false);
 
         // Empty state label (toggled via visibility)
         let empty_label = gtk::Label::new(Some("No terminal selected."));
@@ -298,6 +321,7 @@ impl NativeApp {
         content_box.append(&search_revealer);
         content_box.append(&tab_view);
         content_box.append(&empty_label);
+        content_box.append(&surface_parking_box);
         content_box.append(&status_box);
         split.set_end_child(Some(&content_box));
         toast_overlay.set_child(Some(&split));
@@ -318,6 +342,7 @@ impl NativeApp {
             menu_button,
             tab_view,
             tab_bar_widget,
+            surface_parking_box,
             search_revealer,
             search_entry,
             search_prev_button,
@@ -1087,7 +1112,7 @@ impl NativeApp {
                         let accent_bar = gtk::Box::new(gtk::Orientation::Vertical, 0);
                         accent_bar.set_width_request(3);
                         accent_bar.add_css_class("sidebar-accent-bar");
-                        accent_bar.set_margin_end(0);
+                        accent_bar.set_margin_end(6);
                         outer_box.append(&accent_bar);
                     }
 
@@ -1101,9 +1126,9 @@ impl NativeApp {
                         outer_box.add_css_class("sidebar-active-bg");
                     }
 
-                    // Icon: main repo gets folder, worktree branches get branch icon
+                    // Icon: main repo gets folder, worktree branches get workgroup icon
                     let icon_name = if group.is_worktree_group && !repo.repo.is_default {
-                        "branch-symbolic"
+                        "network-workgroup-symbolic"
                     } else {
                         "folder-open-symbolic"
                     };
@@ -1177,13 +1202,12 @@ impl NativeApp {
 
     fn rebuild_tabs(self: &Rc<Self>) {
         self.rebuilding_tabs.set(true);
-
-        // Remove all existing pages
-        while self.tab_view.n_pages() > 0 {
-            self.tab_view.close_page(&self.tab_view.nth_page(0));
-        }
+        self.park_surface_views();
 
         let Some(active_repo) = self.workspace.borrow().active_repo().cloned() else {
+            while self.tab_view.n_pages() > 0 {
+                self.tab_view.close_page(&self.tab_view.nth_page(0));
+            }
             self.new_tab_button.set_sensitive(false);
             self.search_button.set_sensitive(false);
             self.action_remove_repo.set_enabled(false);
@@ -1203,8 +1227,14 @@ impl NativeApp {
             return;
         };
 
-        // Create pages for each session
-        let mut selected_page: Option<adw::TabPage> = None;
+        // Destructive rebuild: remove all pages, then recreate from workspace state.
+        // This is used for repo switches, repo removal, and app init where a brief
+        // flash is acceptable. For single tab add/remove, create_tab/close_tab
+        // bypass this method entirely for smooth animation.
+        while self.tab_view.n_pages() > 0 {
+            self.tab_view.close_page(&self.tab_view.nth_page(0));
+        }
+
         for session in &active_repo.sessions {
             let wrapper = gtk::Box::new(gtk::Orientation::Vertical, 0);
             wrapper.set_hexpand(true);
@@ -1212,55 +1242,20 @@ impl NativeApp {
             wrapper.set_widget_name(&session.id);
             let page = self.tab_view.append(&wrapper);
             page.set_title(&session.title);
-            if active_repo.active_session_id.as_deref() == Some(session.id.as_str()) {
-                selected_page = Some(page);
+        }
+
+        // Select the active page
+        if let Some(active_session_id) = active_repo.active_session_id.as_deref() {
+            if let Some(page) = find_tab_page_for_session(&self.tab_view, active_session_id) {
+                self.tab_view.set_selected_page(&page);
             }
         }
 
-        if let Some(page) = selected_page {
-            self.tab_view.set_selected_page(&page);
-        }
-
-        // Update action sensitivity
-        let has_session = active_repo.active_session_id.is_some();
-        let active_session_index =
-            active_repo
-                .active_session_id
-                .as_deref()
-                .and_then(|session_id| {
-                    active_repo
-                        .sessions
-                        .iter()
-                        .position(|session| session.id == session_id)
-                });
-        let split_count = self
-            .split_state_for_repo(
-                active_repo.repo.id.as_str(),
-                active_repo.active_session_id.as_deref(),
-            )
-            .visible_session_ids
-            .len();
-
-        self.new_tab_button.set_sensitive(true);
-        self.search_button.set_sensitive(has_session);
-        self.action_remove_repo.set_enabled(true);
-        self.action_close_tab.set_enabled(has_session);
-        self.action_move_tab_left
-            .set_enabled(matches!(active_session_index, Some(index) if index > 0));
-        self.action_move_tab_right.set_enabled(matches!(
-            active_session_index,
-            Some(index) if index + 1 < active_repo.sessions.len()
-        ));
-        self.action_split_right.set_enabled(has_session);
-        self.action_split_down.set_enabled(has_session);
-        self.action_close_split.set_enabled(split_count > 1);
-        self.action_next_pane.set_enabled(split_count > 1);
-        self.action_flip_split.set_enabled(split_count > 1);
-        self.action_settings.set_enabled(true);
+        self.update_action_sensitivity();
 
         if active_repo.sessions.is_empty() {
             self.empty_label
-                .set_text("This repository has no saved terminal tabs yet.");
+                .set_text("No open tabs. Press Ctrl+Shift+T to open a new terminal.");
             self.empty_label.set_visible(true);
             self.tab_view.set_visible(false);
         } else {
@@ -1312,11 +1307,12 @@ impl NativeApp {
     }
 
     fn select_tab_page_for_session(&self, session_id: &str) {
+        let was_rebuilding = self.rebuilding_tabs.get();
         self.rebuilding_tabs.set(true);
         if let Some(page) = find_tab_page_for_session(&self.tab_view, session_id) {
             self.tab_view.set_selected_page(&page);
         }
-        self.rebuilding_tabs.set(false);
+        self.rebuilding_tabs.set(was_rebuilding);
     }
 
     fn update_action_sensitivity(&self) {
@@ -1411,6 +1407,7 @@ impl NativeApp {
     }
 
     fn add_repo_path(self: &Rc<Self>, path: &str) {
+        let _ = db::unhide_repo_path(&self.db, path);
         match db::add_repo(&self.db, path) {
             Ok(repo) => {
                 let repo = self.apply_worktree_grouping(repo);
@@ -1503,6 +1500,7 @@ impl NativeApp {
 
         let mut added_repo_ids = Vec::new();
         for entry in &worktree_info.entries {
+            let _ = db::unhide_repo_path(&self.db, entry.path.as_str());
             match db::add_repo_grouped(
                 &self.db,
                 entry.path.as_str(),
@@ -1643,6 +1641,7 @@ impl NativeApp {
                 .set_text(format!("Failed to remove repository: {error}").as_str());
             return;
         }
+        let _ = db::hide_repo_path(&self.db, repo.repo.path.as_str());
 
         for session in &repo.sessions {
             self.host.borrow_mut().remove_surface(session.id.as_str());
@@ -1714,8 +1713,15 @@ impl NativeApp {
         self.workspace
             .borrow_mut()
             .reorder_sessions(active_repo.repo.id.as_str(), &reordered_session_ids);
-        self.rebuild_tabs();
-        self.show_active_terminal();
+        // Reorder the page in-place instead of rebuilding all tabs
+        if let Some(page) = find_tab_page_for_session(&self.tab_view, active_session_id) {
+            let new_position = reordered_session_ids
+                .iter()
+                .position(|id| id == active_session_id)
+                .unwrap_or(0) as i32;
+            self.tab_view.reorder_page(&page, new_position);
+        }
+        self.update_action_sensitivity();
     }
 
     fn move_active_split(self: &Rc<Self>, direction: isize) {
@@ -2170,6 +2176,8 @@ impl NativeApp {
             .map(|r| r.repo.path.clone())
             .collect();
 
+        let hidden_paths = db::list_hidden_paths(&self.db).unwrap_or_default();
+
         let repo_paths: Vec<String> = self
             .workspace
             .borrow()
@@ -2187,7 +2195,9 @@ impl NativeApp {
             let new_entries: Vec<_> = worktree_info
                 .entries
                 .iter()
-                .filter(|entry| !known_paths.contains(&entry.path))
+                .filter(|entry| {
+                    !known_paths.contains(&entry.path) && !hidden_paths.contains(&entry.path)
+                })
                 .collect();
 
             if new_entries.is_empty() {
@@ -2523,7 +2533,10 @@ impl NativeApp {
         if let Some(surface) = self.host.borrow().surface(session_id) {
             surface.set_fallback_title(title.as_str());
         }
-        self.rebuild_tabs();
+        // Update the page title in-place instead of rebuilding all tabs
+        if let Some(page) = find_tab_page_for_session(&self.tab_view, session_id) {
+            page.set_title(&title);
+        }
         self.refresh_active_terminal_chrome();
     }
 
@@ -2551,8 +2564,39 @@ impl NativeApp {
                     previous_active_session_id.as_deref(),
                     session_id.as_str(),
                 );
-                self.rebuild_tabs();
+
+                // Add a single page inline instead of rebuilding all tabs.
+                // Keep rebuilding_tabs true through show_active_terminal to
+                // prevent signal races.
+                self.rebuilding_tabs.set(true);
+
+                let title = self
+                    .workspace
+                    .borrow()
+                    .repos
+                    .iter()
+                    .find(|r| r.repo.id == repo_id)
+                    .and_then(|r| {
+                        r.sessions
+                            .iter()
+                            .find(|s| s.id == session_id)
+                            .map(|s| s.title.clone())
+                    })
+                    .unwrap_or_else(|| "Terminal".to_string());
+
+                let wrapper = gtk::Box::new(gtk::Orientation::Vertical, 0);
+                wrapper.set_hexpand(true);
+                wrapper.set_vexpand(true);
+                wrapper.set_widget_name(&session_id);
+                let page = self.tab_view.append(&wrapper);
+                page.set_title(&title);
+                self.tab_view.set_selected_page(&page);
+                self.empty_label.set_visible(false);
+                self.tab_view.set_visible(true);
+                self.update_action_sensitivity();
                 self.show_active_terminal();
+
+                self.rebuilding_tabs.set(false);
             }
             Err(error) => {
                 self.status_label
@@ -2628,18 +2672,45 @@ impl NativeApp {
             next_active_session_id.as_deref(),
         );
 
-        if let Some(next_active_session_id) = next_active_session_id {
-            if let Err(error) =
-                db::set_active_tab(&self.db, repo_id, next_active_session_id.as_str())
-            {
+        if let Some(ref next_id) = next_active_session_id {
+            if let Err(error) = db::set_active_tab(&self.db, repo_id, next_id.as_str()) {
                 self.status_label.set_text(
                     format!("Closed tab but failed to persist selection: {error}").as_str(),
                 );
             }
         }
 
-        self.rebuild_tabs();
+        // Remove just the closed tab's page inline instead of rebuilding all tabs.
+        // Keep rebuilding_tabs true through show_active_terminal to prevent signal races.
+        self.rebuilding_tabs.set(true);
+        self.park_surface_views();
+
+        if let Some(page) = find_tab_page_for_session(&self.tab_view, session_id) {
+            self.tab_view.close_page(&page);
+        }
+
+        if let Some(ref next_id) = next_active_session_id {
+            if let Some(page) = find_tab_page_for_session(&self.tab_view, next_id.as_str()) {
+                self.tab_view.set_selected_page(&page);
+            }
+        }
+
+        let session_count = self
+            .workspace
+            .borrow()
+            .active_repo()
+            .map(|r| r.sessions.len())
+            .unwrap_or(0);
+        if session_count == 0 {
+            self.empty_label
+                .set_text("No open tabs. Press Ctrl+Shift+T to open a new terminal.");
+            self.empty_label.set_visible(true);
+            self.tab_view.set_visible(false);
+        }
+        self.update_action_sensitivity();
         self.show_active_terminal();
+
+        self.rebuilding_tabs.set(false);
     }
 
     fn split_right(self: &Rc<Self>) {
@@ -2824,7 +2895,7 @@ impl NativeApp {
             self.close_search();
             self.clear_active_process_info();
             self.empty_label
-                .set_text("This repository has no saved terminal tabs yet.");
+                .set_text("No open tabs. Press Ctrl+Shift+T to open a new terminal.");
             self.empty_label.set_visible(true);
             self.tab_view.set_visible(false);
             self.status_label
@@ -2837,6 +2908,7 @@ impl NativeApp {
         self.tab_view.set_visible(true);
         let split_state =
             self.split_state_for_repo(repo.repo.id.as_str(), Some(active_session_id.as_str()));
+        self.park_surface_views();
         let layout = self.build_terminal_layout(&repo, &split_state);
         self.replace_terminal_layout(&layout);
         if let Some(surface) = self.active_surface() {
@@ -3052,7 +3124,9 @@ impl NativeApp {
         let focus_session_id = session_id.to_string();
         focus_controller.connect_enter(move |_| {
             if let Some(native_app) = weak_self.upgrade() {
-                native_app.select_session(focus_repo_id.as_str(), focus_session_id.as_str());
+                if !native_app.rebuilding_tabs.get() {
+                    native_app.select_session(focus_repo_id.as_str(), focus_session_id.as_str());
+                }
             }
         });
         terminal.add_controller(focus_controller);
@@ -3089,19 +3163,17 @@ impl NativeApp {
         match surfaces {
             [] => gtk::Box::new(gtk::Orientation::Vertical, 0).upcast::<gtk::Widget>(),
             [surface] => {
-                let container = gtk::Box::new(gtk::Orientation::Vertical, 0);
-                detach_widget(surface.terminal());
-                container.append(surface.terminal());
-                container.upcast::<gtk::Widget>()
+                detach_widget_from_parent(surface.view().upcast_ref());
+                surface.view().clone().upcast::<gtk::Widget>()
             }
             [first, remaining @ ..] => {
-                detach_widget(first.terminal());
+                detach_widget_from_parent(first.view().upcast_ref());
                 let paned = gtk::Paned::new(gtk_orientation(orientation));
                 paned.set_wide_handle(true);
                 paned.set_position(divider_positions.get(divider_index).copied().unwrap_or(
                     default_split_position(orientation, self.window.width(), self.window.height()),
                 ));
-                paned.set_start_child(Some(first.terminal()));
+                paned.set_start_child(Some(first.view()));
 
                 let nested = self.build_split_widget(
                     repo_id,
@@ -3133,10 +3205,20 @@ impl NativeApp {
             return;
         };
         let wrapper = page.child();
-        clear_box_children(&wrapper);
         if let Some(wrapper_box) = wrapper.downcast_ref::<gtk::Box>() {
+            clear_box_children(wrapper_box);
             wrapper_box.append(layout);
         }
+    }
+
+    fn park_surface_views(&self) {
+        for surface in self.host.borrow().surfaces() {
+            self.park_surface_view(&surface);
+        }
+    }
+
+    fn park_surface_view(&self, surface: &crate::terminal_host::TerminalSurface) {
+        move_widget_to_box(surface.view().upcast_ref(), &self.surface_parking_box);
     }
 
     fn ensure_surface(
@@ -4059,16 +4141,57 @@ fn find_tab_page_for_session(tab_view: &adw::TabView, session_id: &str) -> Optio
     None
 }
 
-fn clear_box_children<W: IsA<gtk::Widget>>(container: &W) {
+fn clear_box_children(container: &gtk::Box) {
     while let Some(child) = container.first_child() {
-        child.unparent();
+        container.remove(&child);
     }
 }
 
-fn detach_widget<W: IsA<gtk::Widget>>(widget: &W) {
-    if widget.as_ref().parent().is_some() {
-        widget.as_ref().unparent();
+fn move_widget_to_box(widget: &gtk::Widget, container: &gtk::Box) {
+    if widget
+        .parent()
+        .as_ref()
+        .is_some_and(|parent| parent == container.upcast_ref::<gtk::Widget>())
+    {
+        return;
     }
+    detach_widget_from_parent(widget);
+    container.append(widget);
+}
+
+fn detach_widget_from_parent(widget: &gtk::Widget) {
+    let Some(parent) = widget.parent() else {
+        return;
+    };
+
+    if let Ok(parent_box) = parent.clone().downcast::<gtk::Box>() {
+        parent_box.remove(widget);
+        return;
+    }
+
+    if let Ok(parent_paned) = parent.clone().downcast::<gtk::Paned>() {
+        if parent_paned
+            .start_child()
+            .as_ref()
+            .is_some_and(|child| child == widget)
+        {
+            parent_paned.set_start_child(Option::<&gtk::Widget>::None);
+            return;
+        }
+        if parent_paned
+            .end_child()
+            .as_ref()
+            .is_some_and(|child| child == widget)
+        {
+            parent_paned.set_end_child(Option::<&gtk::Widget>::None);
+            return;
+        }
+    }
+
+    panic!(
+        "Unsupported parent type {} when moving terminal surface",
+        parent.type_().name()
+    );
 }
 
 #[cfg(test)]
@@ -4205,6 +4328,38 @@ mod tests {
             vte::Terminal::static_type(),
             "definitely-not-a-vte-signal"
         ));
+    }
+
+    #[gtk::test]
+    fn move_widget_to_box_detaches_from_box_parent() {
+        let source = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        let target = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        let child = gtk::Label::new(Some("terminal"));
+
+        source.append(&child);
+        move_widget_to_box(child.upcast_ref(), &target);
+
+        assert!(source.first_child().is_none());
+        assert_eq!(
+            child.parent().as_ref(),
+            Some(target.upcast_ref::<gtk::Widget>())
+        );
+    }
+
+    #[gtk::test]
+    fn move_widget_to_box_detaches_from_paned_parent() {
+        let paned = gtk::Paned::new(gtk::Orientation::Horizontal);
+        let target = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        let child = gtk::Label::new(Some("terminal"));
+
+        paned.set_start_child(Some(&child));
+        move_widget_to_box(child.upcast_ref(), &target);
+
+        assert!(paned.start_child().is_none());
+        assert_eq!(
+            child.parent().as_ref(),
+            Some(target.upcast_ref::<gtk::Widget>())
+        );
     }
 
     #[test]
