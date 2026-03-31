@@ -22,9 +22,6 @@ impl TerminalSurface {
         let terminal = vte::Terminal::new();
         terminal.set_hexpand(true);
         terminal.set_vexpand(true);
-        terminal.set_margin_start(4);
-        terminal.set_margin_top(4);
-        terminal.set_margin_end(4);
         terminal.set_scrollback_lines(config.scrollback_lines as i64);
 
         let font = gtk::pango::FontDescription::from_string(&format!(
@@ -32,13 +29,7 @@ impl TerminalSurface {
             config.font_family, config.font_size
         ));
         terminal.set_font_desc(Some(&font));
-        let view = gtk::ScrolledWindow::builder()
-            .hscrollbar_policy(gtk::PolicyType::Never)
-            .vscrollbar_policy(gtk::PolicyType::Automatic)
-            .child(&terminal)
-            .hexpand(true)
-            .vexpand(true)
-            .build();
+        let view = terminal_scrolled_window(&terminal);
         theme::apply_terminal_theme(
             &terminal,
             config.theme.as_str(),
@@ -135,9 +126,6 @@ impl TerminalSurface {
     }
 
     pub fn apply_config(&self, config: &UserConfig) {
-        self.terminal.set_margin_start(4);
-        self.terminal.set_margin_top(4);
-        self.terminal.set_margin_end(4);
         self.terminal
             .set_scrollback_lines(config.scrollback_lines as i64);
         let font = gtk::pango::FontDescription::from_string(&format!(
@@ -210,6 +198,19 @@ fn resolved_shell<'a>(session: &'a TerminalSession, config: &'a UserConfig) -> &
         .unwrap_or(config.default_shell.as_str())
 }
 
+fn terminal_scrolled_window(terminal: &vte::Terminal) -> gtk::ScrolledWindow {
+    let view = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .vscrollbar_policy(gtk::PolicyType::Automatic)
+        .child(terminal)
+        .hexpand(true)
+        .vexpand(true)
+        .build();
+    view.set_propagate_natural_width(false);
+    view.set_propagate_natural_height(false);
+    view
+}
+
 fn file_path_from_uri(uri: &str) -> Option<String> {
     gtk::gio::File::for_uri(uri)
         .path()
@@ -261,5 +262,17 @@ mod tests {
     #[test]
     fn file_path_from_non_file_uri_returns_none() {
         assert_eq!(file_path_from_uri("ssh://example.com/home/user"), None);
+    }
+
+    #[gtk::test]
+    fn terminal_scrolled_window_does_not_propagate_vte_natural_width() {
+        let terminal = vte::Terminal::new();
+        let view = terminal_scrolled_window(&terminal);
+        let (_, terminal_natural_width, _, _) = terminal.measure(gtk::Orientation::Horizontal, -1);
+        let (_, view_natural_width, _, _) = view.measure(gtk::Orientation::Horizontal, -1);
+
+        assert!(!view.propagates_natural_width());
+        assert!(!view.propagates_natural_height());
+        assert!(terminal_natural_width > view_natural_width);
     }
 }

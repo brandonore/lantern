@@ -1,0 +1,162 @@
+<h2>Lantern Native: GNOME Prompt-Inspired Redesign</h2>
+<p class="subtitle">Current state vs proposed design direction. Click to select your preferred approach.</p>
+
+<div class="split">
+  <div class="mockup">
+    <div class="mockup-header">Current: What You Have Now</div>
+    <div class="mockup-body" style="background:#2d2d2d;color:#ccc;font-family:system-ui;font-size:12px;padding:0;overflow:hidden;">
+      <!-- Current ugly header with text buttons -->
+      <div style="background:#3d3d3d;padding:6px 10px;display:flex;gap:4px;flex-wrap:wrap;align-items:center;border-bottom:1px solid #555;">
+        <button style="background:#555;color:#ccc;border:1px solid #666;padding:3px 8px;font-size:10px;border-radius:4px;">Hide Sidebar</button>
+        <button style="background:#555;color:#ccc;border:1px solid #666;padding:3px 8px;font-size:10px;border-radius:4px;">Add Repo</button>
+        <button style="background:#555;color:#ccc;border:1px solid #666;padding:3px 8px;font-size:10px;border-radius:4px;">Remove Repo</button>
+        <button style="background:#555;color:#ccc;border:1px solid #666;padding:3px 8px;font-size:10px;border-radius:4px;">New Tab</button>
+        <button style="background:#555;color:#ccc;border:1px solid #666;padding:3px 8px;font-size:10px;border-radius:4px;">Close Tab</button>
+        <button style="background:#555;color:#ccc;border:1px solid #666;padding:3px 8px;font-size:10px;border-radius:4px;">Tab Left</button>
+        <button style="background:#555;color:#ccc;border:1px solid #666;padding:3px 8px;font-size:10px;border-radius:4px;">Tab Right</button>
+        <button style="background:#555;color:#ccc;border:1px solid #666;padding:3px 8px;font-size:10px;border-radius:4px;">Split R</button>
+        <button style="background:#555;color:#ccc;border:1px solid #666;padding:3px 8px;font-size:10px;border-radius:4px;">Split D</button>
+        <button style="background:#555;color:#ccc;border:1px solid #666;padding:3px 8px;font-size:10px;border-radius:4px;">Close Split</button>
+        <span style="flex:1;text-align:center;color:#999;font-size:11px;">Lantern Native</span>
+        <button style="background:#555;color:#ccc;border:1px solid #666;padding:3px 8px;font-size:10px;border-radius:4px;">Search</button>
+        <button style="background:#555;color:#ccc;border:1px solid #666;padding:3px 8px;font-size:10px;border-radius:4px;">Settings</button>
+      </div>
+      <div style="display:flex;height:240px;">
+        <!-- Sidebar with ugly margins -->
+        <div style="width:200px;background:#333;padding:8px;border-right:1px solid #555;overflow:hidden;">
+          <div style="margin-bottom:8px;">
+            <button style="background:#444;color:#ccc;border:1px solid #555;padding:4px 8px;width:100%;text-align:left;font-size:10px;border-radius:3px;">&#9662; supacode</button>
+          </div>
+          <div style="margin-left:8px;margin-bottom:4px;display:flex;gap:4px;">
+            <button style="background:#3584e4;color:white;border:none;padding:4px 8px;flex:1;text-align:left;font-size:10px;border-radius:3px;">main</button>
+            <button style="background:#444;color:#ccc;border:1px solid #555;padding:2px 6px;font-size:10px;border-radius:3px;">x</button>
+          </div>
+          <div style="margin-left:8px;margin-bottom:4px;display:flex;gap:4px;">
+            <button style="background:#444;color:#ccc;border:1px solid #555;padding:4px 8px;flex:1;text-align:left;font-size:10px;border-radius:3px;">feat/auth</button>
+            <button style="background:#444;color:#ccc;border:1px solid #555;padding:2px 6px;font-size:10px;border-radius:3px;">x</button>
+          </div>
+          <div style="margin-top:8px;margin-bottom:8px;">
+            <button style="background:#444;color:#ccc;border:1px solid #555;padding:4px 8px;width:100%;text-align:left;font-size:10px;border-radius:3px;">&#9662; lantern</button>
+          </div>
+          <div style="margin-left:8px;margin-bottom:4px;display:flex;gap:4px;">
+            <button style="background:#444;color:#ccc;border:1px solid #555;padding:4px 8px;flex:1;text-align:left;font-size:10px;border-radius:3px;">main</button>
+            <button style="background:#444;color:#ccc;border:1px solid #555;padding:2px 6px;font-size:10px;border-radius:3px;">x</button>
+          </div>
+        </div>
+        <!-- Content with excessive margins -->
+        <div style="flex:1;padding:12px;">
+          <div style="display:flex;gap:8px;margin-bottom:12px;">
+            <button style="background:#3584e4;color:white;border:none;padding:4px 12px;font-size:10px;border-radius:3px;">Shell 1</button>
+            <button style="background:#444;color:#ccc;border:1px solid #555;padding:4px 12px;font-size:10px;border-radius:3px;">Shell 2</button>
+          </div>
+          <div style="background:#1e1e1e;border-radius:4px;padding:8px;font-family:monospace;font-size:10px;color:#33ff33;height:170px;">
+            <div>$ git status</div>
+            <div style="color:#ccc;">On branch main</div>
+            <div style="color:#ccc;">Changes not staged:</div>
+            <div style="color:#ff6b6b;">&nbsp;&nbsp;modified: src/app.rs</div>
+            <div>&nbsp;</div>
+            <div>$ _</div>
+          </div>
+          <div style="color:#888;font-size:9px;margin-top:4px;">main &bull; dirty &bull; 2 ahead</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="mockup">
+    <div class="mockup-header">Proposed: GNOME Prompt Style</div>
+    <div class="mockup-body" style="background:#1e1e1e;color:#ddd;font-family:system-ui;font-size:12px;padding:0;overflow:hidden;">
+      <!-- Clean header with icons -->
+      <div style="background:#303030;padding:4px 8px;display:flex;align-items:center;gap:0;border-bottom:1px solid #444;">
+        <div style="display:flex;gap:2px;align-items:center;">
+          <button style="background:transparent;color:#aaa;border:none;padding:6px 8px;font-size:14px;border-radius:6px;cursor:pointer;" title="Toggle Sidebar">&#9776;</button>
+          <button style="background:transparent;color:#aaa;border:none;padding:6px 8px;font-size:14px;border-radius:6px;cursor:pointer;" title="Add Repo">&#128193;</button>
+          <button style="background:transparent;color:#aaa;border:none;padding:6px 8px;font-size:14px;border-radius:6px;cursor:pointer;" title="New Tab">+</button>
+        </div>
+        <!-- Integrated tab bar in header -->
+        <div style="flex:1;display:flex;justify-content:center;gap:2px;padding:0 20px;">
+          <div style="background:#484848;color:white;padding:4px 16px;border-radius:6px;font-size:11px;display:flex;align-items:center;gap:6px;">
+            Shell 1
+            <span style="color:#888;font-size:10px;cursor:pointer;">x</span>
+          </div>
+          <div style="background:transparent;color:#999;padding:4px 16px;border-radius:6px;font-size:11px;display:flex;align-items:center;gap:6px;">
+            Shell 2
+            <span style="color:#666;font-size:10px;cursor:pointer;">x</span>
+          </div>
+        </div>
+        <div style="display:flex;gap:2px;align-items:center;">
+          <button style="background:transparent;color:#aaa;border:none;padding:6px 8px;font-size:14px;border-radius:6px;cursor:pointer;" title="Search">&#128269;</button>
+          <button style="background:transparent;color:#aaa;border:none;padding:6px 8px;font-size:14px;border-radius:6px;cursor:pointer;" title="Menu">&#9776;</button>
+        </div>
+      </div>
+      <div style="display:flex;height:240px;">
+        <!-- Clean sidebar with proper list styling -->
+        <div style="width:190px;background:#262626;border-right:1px solid #3a3a3a;padding:0;overflow:hidden;">
+          <div style="padding:8px 12px 4px;color:#888;font-size:9px;text-transform:uppercase;letter-spacing:0.5px;">supacode</div>
+          <div style="background:#3a3a3a;padding:8px 12px;margin:1px 0;display:flex;align-items:center;justify-content:space-between;">
+            <div>
+              <div style="font-size:11px;color:#eee;">main</div>
+              <div style="font-size:9px;color:#888;margin-top:1px;">main &bull; clean</div>
+            </div>
+          </div>
+          <div style="padding:8px 12px;margin:1px 0;display:flex;align-items:center;justify-content:space-between;">
+            <div>
+              <div style="font-size:11px;color:#ccc;">feat/auth</div>
+              <div style="font-size:9px;color:#888;margin-top:1px;">feat/auth &bull; 3 ahead</div>
+            </div>
+          </div>
+          <div style="padding:8px 12px 4px;color:#888;font-size:9px;text-transform:uppercase;letter-spacing:0.5px;margin-top:8px;">lantern</div>
+          <div style="padding:8px 12px;margin:1px 0;">
+            <div style="font-size:11px;color:#ccc;">main</div>
+            <div style="font-size:9px;color:#e06c75;margin-top:1px;">main &bull; dirty &bull; 2 ahead</div>
+          </div>
+        </div>
+        <!-- Terminal fills all space -->
+        <div style="flex:1;display:flex;flex-direction:column;">
+          <div style="flex:1;background:#1a1a1a;font-family:'JetBrains Mono',monospace;font-size:11px;color:#abb2bf;padding:8px;">
+            <div><span style="color:#61afef;">~/repos/supacode</span> <span style="color:#98c379;">main</span></div>
+            <div>$ git status</div>
+            <div>On branch main</div>
+            <div>Changes not staged for commit:</div>
+            <div style="color:#e06c75;">&nbsp;&nbsp;modified: src/app.rs</div>
+            <div>&nbsp;</div>
+            <div><span style="color:#61afef;">~/repos/supacode</span> <span style="color:#98c379;">main*</span></div>
+            <div>$ <span style="border-right:2px solid #528bff;animation:blink 1s infinite;">&nbsp;</span></div>
+          </div>
+          <!-- Subtle status bar -->
+          <div style="background:#262626;padding:3px 10px;font-size:9px;color:#888;border-top:1px solid #3a3a3a;display:flex;justify-content:space-between;">
+            <span>main &bull; dirty &bull; 2 ahead</span>
+            <span style="color:#61afef;">Claude Code</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<h3 style="margin-top:24px;">Key Design Decisions</h3>
+<p class="subtitle">Select which approach resonates with you</p>
+
+<div class="options">
+  <div class="option" data-choice="tabs-in-header" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>Tabs Integrated in Header Bar</h3>
+      <p>Like GNOME Prompt / Chrome — tabs sit in the center of the header bar. Saves vertical space. Uses <code>adw::TabBar</code> + <code>adw::TabView</code> for native GNOME tab behavior (drag reorder, overflow, animations).</p>
+    </div>
+  </div>
+  <div class="option" data-choice="tabs-below-header" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>Tabs Below Header (Supacode Style)</h3>
+      <p>Tabs in their own row below the header bar, like in your Supacode screenshot. More room for tab labels. Still uses <code>adw::TabBar</code> but positioned below the header in the content area.</p>
+    </div>
+  </div>
+  <div class="option" data-choice="tabs-minimal" onclick="toggleSelect(this)">
+    <div class="letter">C</div>
+    <div class="content">
+      <h3>Minimal Tabs (Current Plan)</h3>
+      <p>Keep the current manual tab bar (ToggleButtons) but with icons and better styling. Less refactoring, but won't have native tab features like drag reorder or overflow scrolling.</p>
+    </div>
+  </div>
+</div>

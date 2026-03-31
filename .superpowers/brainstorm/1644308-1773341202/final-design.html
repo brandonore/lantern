@@ -1,0 +1,147 @@
+<h2>Final Design: Lantern Native Redesign</h2>
+<p class="subtitle">Tabs below header (Supacode style) + GNOME Prompt aesthetics</p>
+
+<div class="mockup">
+  <div class="mockup-header">Lantern Native — Final Layout</div>
+  <div class="mockup-body" style="background:#1e1e1e;color:#ddd;font-family:system-ui;font-size:12px;padding:0;overflow:hidden;">
+    <!-- Clean header bar with icon buttons -->
+    <div style="background:#303030;padding:0 8px;display:flex;align-items:center;height:38px;border-bottom:1px solid #444;">
+      <div style="display:flex;gap:1px;align-items:center;">
+        <button style="background:transparent;color:#aaa;border:none;padding:6px 10px;font-size:15px;border-radius:6px;cursor:pointer;" title="Toggle Sidebar">&#9776;</button>
+        <button style="background:transparent;color:#aaa;border:none;padding:6px 10px;font-size:15px;border-radius:6px;cursor:pointer;" title="Add Repo">&#128193;</button>
+        <button style="background:transparent;color:#aaa;border:none;padding:6px 10px;font-size:18px;border-radius:6px;cursor:pointer;" title="New Tab">+</button>
+      </div>
+      <span style="flex:1;text-align:center;color:#888;font-size:12px;font-weight:500;">Lantern</span>
+      <div style="display:flex;gap:1px;align-items:center;">
+        <button style="background:transparent;color:#aaa;border:none;padding:6px 10px;font-size:14px;border-radius:6px;cursor:pointer;" title="Search">&#128269;</button>
+        <button style="background:transparent;color:#aaa;border:none;padding:6px 10px;font-size:14px;border-radius:6px;cursor:pointer;" title="Menu">&#8942;</button>
+      </div>
+    </div>
+
+    <div style="display:flex;height:320px;">
+      <!-- Sidebar -->
+      <div style="width:200px;background:#262626;border-right:1px solid #3a3a3a;display:flex;flex-direction:column;">
+        <div style="flex:1;overflow:auto;padding:0;">
+          <!-- Group: supacode -->
+          <div style="padding:10px 14px 4px;color:#888;font-size:9px;text-transform:uppercase;letter-spacing:0.8px;font-weight:600;">supacode</div>
+          <div style="background:#3584e4;padding:8px 14px;margin:2px 6px;border-radius:8px;">
+            <div style="font-size:11px;color:#fff;font-weight:500;">main</div>
+            <div style="font-size:9px;color:rgba(255,255,255,0.7);margin-top:2px;">main &bull; clean</div>
+          </div>
+          <div style="padding:8px 14px;margin:2px 6px;border-radius:8px;">
+            <div style="font-size:11px;color:#ccc;">swift-crow-317</div>
+            <div style="font-size:9px;color:#888;margin-top:2px;">swift-crow-317 &bull; +1 -3</div>
+          </div>
+          <div style="padding:8px 14px;margin:2px 6px;border-radius:8px;">
+            <div style="font-size:11px;color:#ccc;">feat/repo-settings</div>
+            <div style="font-size:9px;color:#888;margin-top:2px;">feat/repo-settings &bull; clean</div>
+          </div>
+
+          <!-- Group: lantern -->
+          <div style="padding:14px 14px 4px;color:#888;font-size:9px;text-transform:uppercase;letter-spacing:0.8px;font-weight:600;">lantern</div>
+          <div style="padding:8px 14px;margin:2px 6px;border-radius:8px;">
+            <div style="font-size:11px;color:#ccc;">main</div>
+            <div style="font-size:9px;color:#e06c75;margin-top:2px;">main &bull; dirty &bull; 2 ahead</div>
+          </div>
+
+          <!-- Group: git-wt -->
+          <div style="padding:14px 14px 4px;color:#888;font-size:9px;text-transform:uppercase;letter-spacing:0.8px;font-weight:600;">git-wt</div>
+          <div style="padding:8px 14px;margin:2px 6px;border-radius:8px;">
+            <div style="font-size:11px;color:#ccc;">main <span style="font-size:8px;color:#666;background:#333;padding:1px 5px;border-radius:3px;margin-left:4px;">default</span></div>
+            <div style="font-size:9px;color:#888;margin-top:2px;">main &bull; clean</div>
+          </div>
+          <div style="padding:8px 14px;margin:2px 6px;border-radius:8px;">
+            <div style="font-size:11px;color:#ccc;">bright-squid-627</div>
+            <div style="font-size:9px;color:#888;margin-top:2px;">bright-squid-627 &bull; clean</div>
+          </div>
+        </div>
+
+        <!-- Bottom bar: Add Repository -->
+        <div style="border-top:1px solid #3a3a3a;padding:8px 12px;">
+          <button style="background:transparent;color:#888;border:1px dashed #555;padding:5px;width:100%;font-size:10px;border-radius:6px;cursor:pointer;">+ Add Repository</button>
+        </div>
+      </div>
+
+      <!-- Content area -->
+      <div style="flex:1;display:flex;flex-direction:column;">
+        <!-- Tab bar below header (adw::TabBar) -->
+        <div style="background:#2a2a2a;padding:4px 8px;display:flex;align-items:center;gap:2px;border-bottom:1px solid #3a3a3a;">
+          <div style="background:#404040;color:#eee;padding:5px 14px;border-radius:6px;font-size:11px;display:flex;align-items:center;gap:8px;">
+            Shell 1
+            <span style="color:#888;font-size:9px;cursor:pointer;">&#10005;</span>
+          </div>
+          <div style="background:transparent;color:#999;padding:5px 14px;border-radius:6px;font-size:11px;display:flex;align-items:center;gap:8px;">
+            Shell 2
+            <span style="color:#666;font-size:9px;cursor:pointer;">&#10005;</span>
+          </div>
+          <div style="background:transparent;color:#999;padding:5px 14px;border-radius:6px;font-size:11px;display:flex;align-items:center;gap:8px;">
+            Claude Code
+            <span style="color:#666;font-size:9px;cursor:pointer;">&#10005;</span>
+          </div>
+        </div>
+
+        <!-- Terminal fills all remaining space -->
+        <div style="flex:1;background:#1a1a1a;font-family:'JetBrains Mono',Consolas,monospace;font-size:11px;color:#abb2bf;padding:6px 8px;overflow:hidden;">
+          <div><span style="color:#61afef;">y2ktheory</span>@<span style="color:#98c379;">arch</span> <span style="color:#c678dd;">~/repos/supacode</span> <span style="color:#98c379;">(main)</span></div>
+          <div>$ git log --oneline -5</div>
+          <div style="color:#e5c07b;">3e866ec</div><span style="color:#abb2bf;"> Add sidebar repo grouping, git worktree support</span>
+          <div style="color:#e5c07b;">f55aa99</div><span style="color:#abb2bf;"> Add theme system, settings UI access, font scaling</span>
+          <div style="color:#e5c07b;">520357d</div><span style="color:#abb2bf;"> Fix WebKitGTK compositing crash on Wayland</span>
+          <div style="color:#e5c07b;">f6e8837</div><span style="color:#abb2bf;"> Fix 12 post-review bugs: PTY lifecycle, layout persistence</span>
+          <div style="color:#e5c07b;">f0ef677</div><span style="color:#abb2bf;"> Initial scaffold: Tauri terminal workspace manager</span>
+          <div>&nbsp;</div>
+          <div><span style="color:#61afef;">y2ktheory</span>@<span style="color:#98c379;">arch</span> <span style="color:#c678dd;">~/repos/supacode</span> <span style="color:#98c379;">(main)</span></div>
+          <div>$ <span style="border-right:2px solid #528bff;">&nbsp;</span></div>
+        </div>
+
+        <!-- Status bar -->
+        <div style="background:#262626;padding:3px 10px;font-size:9px;color:#888;border-top:1px solid #3a3a3a;display:flex;justify-content:space-between;">
+          <span><span style="color:#98c379;">main</span> &bull; clean &bull; up to date</span>
+          <span style="color:#61afef;">Claude Code</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<h3 style="margin-top:24px;">Architecture Summary</h3>
+
+<div class="section" style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
+  <div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:16px;">
+    <h3 style="margin-top:0;font-size:14px;">Header Bar</h3>
+    <ul style="font-size:12px;color:#aaa;padding-left:16px;">
+      <li>3 icon buttons left: sidebar toggle, add repo, new tab</li>
+      <li>"Lantern" title center</li>
+      <li>2 icon buttons right: search, hamburger menu</li>
+      <li>Menu contains: splits, tab ops, remove repo, settings</li>
+    </ul>
+  </div>
+  <div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:16px;">
+    <h3 style="margin-top:0;font-size:14px;">Sidebar</h3>
+    <ul style="font-size:12px;color:#aaa;padding-left:16px;">
+      <li><code>gtk::ListBox</code> with <code>navigation-sidebar</code> CSS class</li>
+      <li>Group headers as uppercase section labels</li>
+      <li>Selected repo highlighted with accent color</li>
+      <li>Git meta (branch, dirty, ahead/behind) per row</li>
+      <li>"+ Add Repository" button at bottom</li>
+    </ul>
+  </div>
+  <div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:16px;">
+    <h3 style="margin-top:0;font-size:14px;">Tab Bar</h3>
+    <ul style="font-size:12px;color:#aaa;padding-left:16px;">
+      <li><code>adw::TabBar</code> + <code>adw::TabView</code></li>
+      <li>Positioned below header, above terminal</li>
+      <li>Native drag reorder, close buttons, overflow</li>
+      <li>Each tab page contains a VTE terminal (or split layout)</li>
+    </ul>
+  </div>
+  <div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:16px;">
+    <h3 style="margin-top:0;font-size:14px;">Terminal Area</h3>
+    <ul style="font-size:12px;color:#aaa;padding-left:16px;">
+      <li>Zero margins — terminal fills all available space</li>
+      <li>VTE terminal with theme-matched colors</li>
+      <li>Split panes via <code>gtk::Paned</code> inside tab pages</li>
+      <li>Subtle status bar at bottom (branch, agent detection)</li>
+    </ul>
+  </div>
+</div>

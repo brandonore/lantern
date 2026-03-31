@@ -4,6 +4,7 @@ use crate::theme::{
     theme_is_dark,
 };
 use adw::prelude::*;
+use gtk::gdk;
 use gtk::gio;
 use lantern_core::{
     db, git, AppLayout, DbConn, LanternError, NativeSplitOrientation, NativeSplitState,
@@ -53,6 +54,7 @@ struct NativeApp {
     // Tab management
     tab_view: adw::TabView,
     tab_bar_widget: adw::TabBar,
+    terminal_layout_box: gtk::Box,
     surface_parking_box: gtk::Box,
     // Search
     search_revealer: gtk::Revealer,
@@ -200,6 +202,7 @@ impl NativeApp {
         let toast_overlay = adw::ToastOverlay::new();
 
         let split = gtk::Paned::new(gtk::Orientation::Horizontal);
+        configure_fixed_start_paned(&split, false);
         split.set_wide_handle(true);
         split.set_position(sidebar_width);
 
@@ -231,11 +234,9 @@ impl NativeApp {
         // --- Hover-visible remove button CSS ---
         let css = gtk::CssProvider::new();
         css.load_from_data(
-            "listbox.navigation-sidebar row .remove-button { opacity: 0; transition: opacity 150ms; } \
+            "vte-terminal { padding: 4px 4px 0px 4px; } \
+             listbox.navigation-sidebar row .remove-button { opacity: 0; transition: opacity 150ms; } \
              listbox.navigation-sidebar row:hover .remove-button { opacity: 1; } \
-             listbox.navigation-sidebar row .sidebar-move-button { opacity: 0; transition: opacity 150ms; } \
-             listbox.navigation-sidebar row:hover .sidebar-move-button { opacity: 0.7; } \
-             listbox.navigation-sidebar row .sidebar-move-button image { -gtk-icon-size: 14px; } \
              .sidebar-active-bg { \
                background-color: alpha(@accent_bg_color, 0.12); \
                border-radius: 6px; \
@@ -260,15 +261,23 @@ impl NativeApp {
 
         // --- Content area: zero margins ---
         let content_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        content_box.set_hexpand(true);
+        content_box.set_vexpand(true);
 
         // Tab bar (adw::TabBar + adw::TabView)
         let tab_view = adw::TabView::new();
-        tab_view.set_hexpand(true);
-        tab_view.set_vexpand(true);
+        tab_view.set_visible(false);
 
         let tab_bar_widget = adw::TabBar::new();
         tab_bar_widget.set_view(Some(&tab_view));
         tab_bar_widget.set_autohide(false);
+        tab_bar_widget.set_expand_tabs(false);
+        tab_bar_widget.set_hexpand(true);
+        tab_bar_widget.add_css_class("inline");
+
+        let terminal_layout_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        terminal_layout_box.set_hexpand(true);
+        terminal_layout_box.set_vexpand(true);
 
         let surface_parking_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
         surface_parking_box.set_visible(false);
@@ -319,8 +328,9 @@ impl NativeApp {
 
         content_box.append(&tab_bar_widget);
         content_box.append(&search_revealer);
-        content_box.append(&tab_view);
+        content_box.append(&terminal_layout_box);
         content_box.append(&empty_label);
+        content_box.append(&tab_view);
         content_box.append(&surface_parking_box);
         content_box.append(&status_box);
         split.set_end_child(Some(&content_box));
@@ -342,6 +352,7 @@ impl NativeApp {
             menu_button,
             tab_view,
             tab_bar_widget,
+            terminal_layout_box,
             surface_parking_box,
             search_revealer,
             search_entry,
@@ -1063,35 +1074,36 @@ impl NativeApp {
             });
             header_box.append(&collapse_button);
 
-            let move_up_button = gtk::Button::from_icon_name("go-up-symbolic");
-            move_up_button.add_css_class("flat");
-            move_up_button.add_css_class("sidebar-move-button");
-            move_up_button.set_tooltip_text(Some("Move Group Up"));
-            let weak_self = Rc::downgrade(self);
-            let group_id = group.group_id.clone();
-            move_up_button.connect_clicked(move |_| {
-                let Some(native_app) = weak_self.upgrade() else {
-                    return;
-                };
-                native_app.move_sidebar_group(group_id.as_str(), -1);
-            });
-            header_box.append(&move_up_button);
-
-            let move_down_button = gtk::Button::from_icon_name("go-down-symbolic");
-            move_down_button.add_css_class("flat");
-            move_down_button.add_css_class("sidebar-move-button");
-            move_down_button.set_tooltip_text(Some("Move Group Down"));
-            let weak_self = Rc::downgrade(self);
-            let group_id = group.group_id.clone();
-            move_down_button.connect_clicked(move |_| {
-                let Some(native_app) = weak_self.upgrade() else {
-                    return;
-                };
-                native_app.move_sidebar_group(group_id.as_str(), 1);
-            });
-            header_box.append(&move_down_button);
-
             header_row.set_child(Some(&header_box));
+
+            // Drag source: carry group_id as string
+            let drag_source = gtk::DragSource::new();
+            drag_source.set_actions(gdk::DragAction::MOVE);
+            let drag_group_id = group.group_id.clone();
+            drag_source.connect_prepare(move |_source, _x, _y| {
+                Some(gdk::ContentProvider::for_value(
+                    &drag_group_id.to_value(),
+                ))
+            });
+            header_row.add_controller(drag_source);
+
+            // Drop target: accept group_id strings and reorder
+            let drop_target =
+                gtk::DropTarget::new(gtk::glib::Type::STRING, gdk::DragAction::MOVE);
+            let weak_self = Rc::downgrade(self);
+            let target_group_id = group.group_id.clone();
+            drop_target.connect_drop(move |_target, value, _x, _y| {
+                let Ok(source_group_id) = value.get::<String>() else {
+                    return false;
+                };
+                let Some(native_app) = weak_self.upgrade() else {
+                    return false;
+                };
+                native_app.drop_sidebar_group(&source_group_id, &target_group_id);
+                true
+            });
+            header_row.add_controller(drop_target);
+
             self.sidebar_list.append(&header_row);
 
             if !collapsed {
@@ -1222,7 +1234,7 @@ impl NativeApp {
             self.action_settings.set_enabled(true);
             self.empty_label.set_text("No repositories configured yet.");
             self.empty_label.set_visible(true);
-            self.tab_view.set_visible(false);
+            self.terminal_layout_box.set_visible(false);
             self.rebuilding_tabs.set(false);
             return;
         };
@@ -1257,10 +1269,10 @@ impl NativeApp {
             self.empty_label
                 .set_text("No open tabs. Press Ctrl+Shift+T to open a new terminal.");
             self.empty_label.set_visible(true);
-            self.tab_view.set_visible(false);
+            self.terminal_layout_box.set_visible(false);
         } else {
             self.empty_label.set_visible(false);
-            self.tab_view.set_visible(true);
+            self.terminal_layout_box.set_visible(true);
         }
 
         self.rebuilding_tabs.set(false);
@@ -1784,10 +1796,10 @@ impl NativeApp {
         self.schedule_layout_persist();
     }
 
-    fn move_sidebar_group(self: &Rc<Self>, group_id: &str, direction: isize) {
+    fn drop_sidebar_group(self: &Rc<Self>, source_group_id: &str, target_group_id: &str) {
         let group_order = sidebar_groups(&self.workspace.borrow().repos);
         let Some(reordered_repo_ids) =
-            reordered_repo_ids_for_group_move(&group_order, group_id, direction)
+            reordered_repo_ids_for_group_drop(&group_order, source_group_id, target_group_id)
         else {
             return;
         };
@@ -2592,7 +2604,7 @@ impl NativeApp {
                 page.set_title(&title);
                 self.tab_view.set_selected_page(&page);
                 self.empty_label.set_visible(false);
-                self.tab_view.set_visible(true);
+                self.terminal_layout_box.set_visible(true);
                 self.update_action_sensitivity();
                 self.show_active_terminal();
 
@@ -2705,7 +2717,7 @@ impl NativeApp {
             self.empty_label
                 .set_text("No open tabs. Press Ctrl+Shift+T to open a new terminal.");
             self.empty_label.set_visible(true);
-            self.tab_view.set_visible(false);
+            self.terminal_layout_box.set_visible(false);
         }
         self.update_action_sensitivity();
         self.show_active_terminal();
@@ -2885,7 +2897,7 @@ impl NativeApp {
             self.clear_active_process_info();
             self.empty_label.set_text("No repositories configured yet.");
             self.empty_label.set_visible(true);
-            self.tab_view.set_visible(false);
+            self.terminal_layout_box.set_visible(false);
             self.status_label.set_text("No active repository.");
             self.window.set_title(Some("Lantern"));
             return;
@@ -2897,7 +2909,7 @@ impl NativeApp {
             self.empty_label
                 .set_text("No open tabs. Press Ctrl+Shift+T to open a new terminal.");
             self.empty_label.set_visible(true);
-            self.tab_view.set_visible(false);
+            self.terminal_layout_box.set_visible(false);
             self.status_label
                 .set_text(format!("{} • no tabs", repo.repo.path).as_str());
             self.window.set_title(Some("Lantern"));
@@ -2905,7 +2917,7 @@ impl NativeApp {
         };
 
         self.empty_label.set_visible(false);
-        self.tab_view.set_visible(true);
+        self.terminal_layout_box.set_visible(true);
         let split_state =
             self.split_state_for_repo(repo.repo.id.as_str(), Some(active_session_id.as_str()));
         self.park_surface_views();
@@ -3169,6 +3181,7 @@ impl NativeApp {
             [first, remaining @ ..] => {
                 detach_widget_from_parent(first.view().upcast_ref());
                 let paned = gtk::Paned::new(gtk_orientation(orientation));
+                configure_fixed_start_paned(&paned, true);
                 paned.set_wide_handle(true);
                 paned.set_position(divider_positions.get(divider_index).copied().unwrap_or(
                     default_split_position(orientation, self.window.width(), self.window.height()),
@@ -3201,14 +3214,8 @@ impl NativeApp {
     }
 
     fn replace_terminal_layout(&self, layout: &impl IsA<gtk::Widget>) {
-        let Some(page) = self.tab_view.selected_page() else {
-            return;
-        };
-        let wrapper = page.child();
-        if let Some(wrapper_box) = wrapper.downcast_ref::<gtk::Box>() {
-            clear_box_children(wrapper_box);
-            wrapper_box.append(layout);
-        }
+        clear_box_children(&self.terminal_layout_box);
+        self.terminal_layout_box.append(layout);
     }
 
     fn park_surface_views(&self) {
@@ -3717,19 +3724,23 @@ fn sidebar_groups(repos: &[RepoWorkspace]) -> Vec<SidebarRepoGroup> {
     groups
 }
 
-fn reordered_repo_ids_for_group_move(
+fn reordered_repo_ids_for_group_drop(
     groups: &[SidebarRepoGroup],
-    group_id: &str,
-    direction: isize,
+    source_group_id: &str,
+    target_group_id: &str,
 ) -> Option<Vec<String>> {
-    let current_index = groups.iter().position(|group| group.group_id == group_id)?;
-    let target_index = current_index.checked_add_signed(direction)?;
-    if target_index >= groups.len() {
+    let source_index = groups
+        .iter()
+        .position(|group| group.group_id == source_group_id)?;
+    let target_index = groups
+        .iter()
+        .position(|group| group.group_id == target_group_id)?;
+    if source_index == target_index {
         return None;
     }
 
     let mut reordered_groups = groups.to_vec();
-    let moved_group = reordered_groups.remove(current_index);
+    let moved_group = reordered_groups.remove(source_index);
     reordered_groups.insert(target_index, moved_group);
 
     Some(
@@ -3867,6 +3878,15 @@ fn default_split_position(
         NativeSplitOrientation::Horizontal => (window_width / 2).max(320),
         NativeSplitOrientation::Vertical => (window_height / 2).max(180),
     }
+}
+
+fn configure_fixed_start_paned(paned: &gtk::Paned, shrink_start_child: bool) {
+    paned.set_hexpand(true);
+    paned.set_vexpand(true);
+    paned.set_resize_start_child(false);
+    paned.set_resize_end_child(true);
+    paned.set_shrink_start_child(shrink_start_child);
+    paned.set_shrink_end_child(true);
 }
 
 fn apply_active_session_change(
@@ -4198,6 +4218,15 @@ fn detach_widget_from_parent(widget: &gtk::Widget) {
 mod tests {
     use super::*;
 
+    fn flush_gtk_events() {
+        let context = gtk::glib::MainContext::default();
+        for _ in 0..50 {
+            while context.pending() {
+                context.iteration(false);
+            }
+        }
+    }
+
     #[test]
     fn next_session_title_avoids_duplicates() {
         use lantern_core::TerminalSession;
@@ -4360,6 +4389,126 @@ mod tests {
             child.parent().as_ref(),
             Some(target.upcast_ref::<gtk::Widget>())
         );
+    }
+
+    #[gtk::test]
+    fn fixed_start_paned_keeps_terminal_content_within_remaining_width() {
+        let window = gtk::Window::builder()
+            .default_width(900)
+            .default_height(600)
+            .build();
+
+        let sidebar_list = gtk::ListBox::new();
+        let sidebar_scroll = gtk::ScrolledWindow::builder()
+            .min_content_width(200)
+            .child(&sidebar_list)
+            .vexpand(true)
+            .build();
+        let sidebar_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        sidebar_box.append(&sidebar_scroll);
+
+        let tab_view = adw::TabView::new();
+        tab_view.set_hexpand(true);
+        tab_view.set_vexpand(true);
+
+        let tab_bar = adw::TabBar::new();
+        tab_bar.set_view(Some(&tab_view));
+        tab_bar.set_autohide(false);
+        tab_bar.set_expand_tabs(false);
+        tab_bar.set_hexpand(true);
+        tab_bar.add_css_class("inline");
+
+        let wrapper = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        wrapper.set_hexpand(true);
+        wrapper.set_vexpand(true);
+        let page = tab_view.append(&wrapper);
+        page.set_title("Terminal 1");
+
+        let terminal = vte::Terminal::new();
+        terminal.set_hexpand(true);
+        terminal.set_vexpand(true);
+        let view = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vscrollbar_policy(gtk::PolicyType::Automatic)
+            .child(&terminal)
+            .hexpand(true)
+            .vexpand(true)
+            .build();
+        view.set_propagate_natural_width(false);
+        view.set_propagate_natural_height(false);
+        wrapper.append(&view);
+
+        let content_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        content_box.set_hexpand(true);
+        content_box.set_vexpand(true);
+        content_box.append(&tab_bar);
+        content_box.append(&tab_view);
+
+        let split = gtk::Paned::new(gtk::Orientation::Horizontal);
+        configure_fixed_start_paned(&split, false);
+        split.set_wide_handle(true);
+        split.set_position(280);
+        split.set_start_child(Some(&sidebar_box));
+        split.set_end_child(Some(&content_box));
+
+        window.set_child(Some(&split));
+        window.present();
+        flush_gtk_events();
+
+        let handle_width =
+            split.allocated_width() - sidebar_box.allocated_width() - content_box.allocated_width();
+
+        assert!(!split.resizes_start_child());
+        assert!(split.resizes_end_child());
+        assert!(!split.shrinks_start_child());
+        assert!(split.shrinks_end_child());
+        assert_eq!(sidebar_box.allocated_width(), split.position());
+        assert_eq!(
+            content_box.allocated_width(),
+            split.allocated_width() - split.position() - handle_width
+        );
+        assert_eq!(tab_bar.allocated_width(), content_box.allocated_width());
+        assert_eq!(tab_view.allocated_width(), content_box.allocated_width());
+        assert_eq!(view.allocated_width(), content_box.allocated_width());
+        assert!(terminal.allocated_width() <= view.allocated_width());
+
+        window.close();
+    }
+
+    #[gtk::test]
+    fn tab_bar_uses_overflow_in_narrow_windows() {
+        let window = gtk::Window::builder()
+            .default_width(480)
+            .default_height(320)
+            .build();
+
+        let tab_view = adw::TabView::new();
+        let tab_bar = adw::TabBar::new();
+        tab_bar.set_view(Some(&tab_view));
+        tab_bar.set_autohide(false);
+        tab_bar.set_expand_tabs(false);
+        tab_bar.set_hexpand(true);
+        tab_bar.add_css_class("inline");
+
+        for index in 1..=8 {
+            let page = tab_view.append(&gtk::Box::new(gtk::Orientation::Vertical, 0));
+            page.set_title(&format!("Terminal {index}"));
+        }
+
+        let content_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        content_box.set_hexpand(true);
+        content_box.append(&tab_bar);
+
+        window.set_child(Some(&content_box));
+        window.present();
+        flush_gtk_events();
+
+        assert!(!tab_bar.expands_tabs());
+        assert!(tab_bar.is_overflowing());
+        assert_eq!(tab_bar.allocated_width(), content_box.allocated_width());
+        assert!(window.allocated_width() <= 480);
+
+        window.close();
     }
 
     #[test]
@@ -4736,59 +4885,72 @@ mod tests {
     }
 
     #[test]
-    fn reordered_repo_ids_for_group_move_moves_group_as_a_block() {
-        let groups = sidebar_groups(&[
-            RepoWorkspace {
-                repo: lantern_core::Repo {
-                    id: "repo-1".to_string(),
-                    name: "repo-1".to_string(),
-                    path: "/tmp/repo-1".to_string(),
-                    sort_order: 0,
-                    group_id: None,
-                    is_default: false,
-                },
-                sessions: Vec::new(),
-                active_session_id: None,
+    fn reordered_repo_ids_for_group_drop_moves_group_to_target_position() {
+        let groups = vec![
+            SidebarRepoGroup {
+                group_id: "a".to_string(),
+                name: "a".to_string(),
+                repos: vec![RepoWorkspace {
+                    repo: lantern_core::Repo {
+                        id: "repo-a".to_string(),
+                        name: "a".to_string(),
+                        path: "/tmp/a".to_string(),
+                        sort_order: 0,
+                        group_id: None,
+                        is_default: false,
+                    },
+                    sessions: Vec::new(),
+                    active_session_id: None,
+                }],
+                is_worktree_group: false,
             },
-            RepoWorkspace {
-                repo: lantern_core::Repo {
-                    id: "main".to_string(),
-                    name: "main".to_string(),
-                    path: "/tmp/main".to_string(),
-                    sort_order: 1,
-                    group_id: Some("group-1".to_string()),
-                    is_default: true,
-                },
-                sessions: Vec::new(),
-                active_session_id: None,
+            SidebarRepoGroup {
+                group_id: "b".to_string(),
+                name: "b".to_string(),
+                repos: vec![RepoWorkspace {
+                    repo: lantern_core::Repo {
+                        id: "repo-b".to_string(),
+                        name: "b".to_string(),
+                        path: "/tmp/b".to_string(),
+                        sort_order: 1,
+                        group_id: None,
+                        is_default: false,
+                    },
+                    sessions: Vec::new(),
+                    active_session_id: None,
+                }],
+                is_worktree_group: false,
             },
-            RepoWorkspace {
-                repo: lantern_core::Repo {
-                    id: "feature".to_string(),
-                    name: "feature".to_string(),
-                    path: "/tmp/feature".to_string(),
-                    sort_order: 2,
-                    group_id: Some("group-1".to_string()),
-                    is_default: false,
-                },
-                sessions: Vec::new(),
-                active_session_id: None,
+            SidebarRepoGroup {
+                group_id: "c".to_string(),
+                name: "c".to_string(),
+                repos: vec![RepoWorkspace {
+                    repo: lantern_core::Repo {
+                        id: "repo-c".to_string(),
+                        name: "c".to_string(),
+                        path: "/tmp/c".to_string(),
+                        sort_order: 2,
+                        group_id: None,
+                        is_default: false,
+                    },
+                    sessions: Vec::new(),
+                    active_session_id: None,
+                }],
+                is_worktree_group: false,
             },
-        ]);
+        ];
 
-        let reordered_repo_ids = reordered_repo_ids_for_group_move(&groups, "group-1", -1).unwrap();
-        assert_eq!(
-            reordered_repo_ids,
-            vec![
-                "main".to_string(),
-                "feature".to_string(),
-                "repo-1".to_string(),
-            ]
-        );
+        // Drag first group down to third
+        let result = reordered_repo_ids_for_group_drop(&groups, "a", "c").unwrap();
+        assert_eq!(result, vec!["repo-b", "repo-c", "repo-a"]);
+
+        // Drag third group up to first
+        let result = reordered_repo_ids_for_group_drop(&groups, "c", "a").unwrap();
+        assert_eq!(result, vec!["repo-c", "repo-a", "repo-b"]);
     }
 
     #[test]
-    fn reordered_repo_ids_for_group_move_returns_none_at_edges() {
+    fn reordered_repo_ids_for_group_drop_returns_none_for_same_position() {
         let groups = vec![SidebarRepoGroup {
             group_id: "only".to_string(),
             name: "only".to_string(),
@@ -4796,7 +4958,10 @@ mod tests {
             is_worktree_group: false,
         }];
 
-        assert_eq!(reordered_repo_ids_for_group_move(&groups, "only", -1), None);
+        assert_eq!(
+            reordered_repo_ids_for_group_drop(&groups, "only", "only"),
+            None
+        );
     }
 
     #[test]
