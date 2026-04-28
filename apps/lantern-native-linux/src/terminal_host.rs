@@ -121,10 +121,6 @@ impl TerminalSurface {
         &self.view
     }
 
-    pub fn set_fallback_title(&self, title: &str) {
-        self.fallback_title.replace(title.to_string());
-    }
-
     pub fn apply_config(&self, config: &UserConfig) {
         self.terminal
             .set_scrollback_lines(config.scrollback_lines as i64);
@@ -226,6 +222,7 @@ mod tests {
         let session = TerminalSession {
             id: "tab-1".to_string(),
             repo_id: "repo-1".to_string(),
+            tab_id: "tab-1".to_string(),
             title: "Terminal 1".to_string(),
             shell: Some("/bin/bash".to_string()),
             sort_order: 0,
@@ -239,6 +236,7 @@ mod tests {
         let session = TerminalSession {
             id: "tab-1".to_string(),
             repo_id: "repo-1".to_string(),
+            tab_id: "tab-1".to_string(),
             title: "Terminal 1".to_string(),
             shell: None,
             sort_order: 0,
@@ -271,6 +269,7 @@ mod tests {
         let (_, terminal_natural_width, _, _) = terminal.measure(gtk::Orientation::Horizontal, -1);
         let (_, view_natural_width, _, _) = view.measure(gtk::Orientation::Horizontal, -1);
 
+        assert_eq!(view.hscrollbar_policy(), gtk::PolicyType::Never);
         assert!(!view.propagates_natural_width());
         assert!(!view.propagates_natural_height());
         assert!(terminal_natural_width > view_natural_width);

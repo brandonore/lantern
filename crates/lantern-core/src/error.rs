@@ -23,6 +23,9 @@ pub enum LanternError {
     #[error("Session not found: {0}")]
     SessionNotFound(String),
 
+    #[error("Tab not found: {0}")]
+    TabNotFound(String),
+
     #[error("Repo not found: {0}")]
     RepoNotFound(String),
 

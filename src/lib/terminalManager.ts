@@ -44,6 +44,7 @@ const RECOGNIZED_AGENT_PROCESSES = new Set([
 const FALLBACK_FOREGROUND_PROCESS_POLL_MS = 1000;
 const INPUT_BATCH_WINDOW_MS = 6;
 const PREDICTIVE_ECHO_DELAY_MS = 45;
+const SHELL_PREDICTIVE_ECHO_ENABLED = false;
 const SHELL_INTEGRATION_PREFIX = "\u001b]633;Lantern;";
 const SHELL_INTEGRATION_PROMPT = "Prompt";
 const SHELL_INTEGRATION_TERMINATOR = "\u0007";
@@ -436,16 +437,16 @@ class TerminalManager {
       if (predictiveEcho.integrationSeen && !predictiveEcho.promptReady) {
         return null;
       }
-      return "shell";
+      return SHELL_PREDICTIVE_ECHO_ENABLED ? "shell" : null;
     }
 
     if (predictiveEcho.integrationSeen) {
-      return predictiveEcho.promptReady ? "shell" : null;
+      return SHELL_PREDICTIVE_ECHO_ENABLED && predictiveEcho.promptReady ? "shell" : null;
     }
 
     if (predictiveEcho.foregroundProcessPolled) return null;
 
-    return "shell";
+    return SHELL_PREDICTIVE_ECHO_ENABLED ? "shell" : null;
   }
 
   private isPredictiveEchoEligible(managed: ManagedTerminal): boolean {

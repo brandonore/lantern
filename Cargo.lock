@@ -2133,6 +2133,7 @@ dependencies = [
  "gtk4",
  "lantern-core",
  "libadwaita",
+ "libpanel",
  "uuid",
  "vte4",
 ]
@@ -2232,6 +2233,37 @@ checksum = "b67380fd3b2fbe7527a606e18729d21c6f3951633d0500574c4dc22d2d638b9f"
 dependencies = [
  "cfg-if",
  "winapi",
+]
+
+[[package]]
+name = "libpanel"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "853d6d6865c9dad18aa2873058502ac07bab1caf5a73f514595cb0a1e19104b0"
+dependencies = [
+ "futures-core",
+ "gdk4",
+ "gio 0.21.5",
+ "glib 0.21.5",
+ "gtk4",
+ "libadwaita",
+ "libc",
+ "libpanel-sys",
+]
+
+[[package]]
+name = "libpanel-sys"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "42885e16466bdaafd2da1972d0e996f1245e41e821d663f7efba2f79d47c3d49"
+dependencies = [
+ "gio-sys 0.21.5",
+ "glib-sys 0.21.5",
+ "gobject-sys 0.21.5",
+ "gtk4-sys",
+ "libadwaita-sys",
+ "libc",
+ "system-deps 7.0.7",
 ]
 
 [[package]]

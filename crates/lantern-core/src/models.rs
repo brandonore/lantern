@@ -14,6 +14,7 @@ pub struct Repo {
 pub struct TerminalSession {
     pub id: String,
     pub repo_id: String,
+    pub tab_id: String,
     pub title: String,
     pub shell: Option<String>,
     pub sort_order: i32,
@@ -64,10 +65,64 @@ pub struct NativeSplitState {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TerminalTab {
+    pub id: String,
+    pub repo_id: String,
+    pub title: String,
+    pub sort_order: i32,
+    pub active_session_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TabWorkspace {
+    pub tab: TerminalTab,
+    pub sessions: Vec<TerminalSession>,
+}
+
+impl TabWorkspace {
+    pub fn active_session(&self) -> Option<&TerminalSession> {
+        self.tab
+            .active_session_id
+            .as_deref()
+            .and_then(|session_id| self.sessions.iter().find(|session| session.id == session_id))
+            .or_else(|| self.sessions.first())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RepoWorkspace {
     pub repo: Repo,
-    pub sessions: Vec<TerminalSession>,
-    pub active_session_id: Option<String>,
+    pub tabs: Vec<TabWorkspace>,
+    pub active_tab_id: Option<String>,
+}
+
+impl RepoWorkspace {
+    pub fn active_tab(&self) -> Option<&TabWorkspace> {
+        self.active_tab_id
+            .as_deref()
+            .and_then(|tab_id| self.tabs.iter().find(|tab| tab.tab.id == tab_id))
+            .or_else(|| self.tabs.first())
+    }
+
+    pub fn tab(&self, tab_id: &str) -> Option<&TabWorkspace> {
+        self.tabs.iter().find(|tab| tab.tab.id == tab_id)
+    }
+
+    pub fn tab_mut(&mut self, tab_id: &str) -> Option<&mut TabWorkspace> {
+        self.tabs.iter_mut().find(|tab| tab.tab.id == tab_id)
+    }
+
+    pub fn session(&self, session_id: &str) -> Option<&TerminalSession> {
+        self.tabs
+            .iter()
+            .find_map(|tab| tab.sessions.iter().find(|session| session.id == session_id))
+    }
+
+    pub fn tab_for_session(&self, session_id: &str) -> Option<&TabWorkspace> {
+        self.tabs
+            .iter()
+            .find(|tab| tab.sessions.iter().any(|session| session.id == session_id))
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

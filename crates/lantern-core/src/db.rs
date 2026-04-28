@@ -1,5 +1,7 @@
 use crate::error::LanternError;
-use crate::models::{AppLayout, NativeSplitOrientation, NativeSplitState, Repo, TerminalSession};
+use crate::models::{
+    AppLayout, NativeSplitOrientation, NativeSplitState, Repo, TerminalSession, TerminalTab,
+};
 use crate::paths;
 use rusqlite::{params, Connection};
 use std::collections::{HashMap, HashSet};
@@ -8,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
 pub type DbConn = Arc<Mutex<Connection>>;
-const CURRENT_SCHEMA_VERSION: i32 = 6;
+const CURRENT_SCHEMA_VERSION: i32 = 7;
 
 pub fn init_db(path: Option<PathBuf>) -> Result<DbConn, LanternError> {
     let db_path = path.unwrap_or_else(paths::db_file);
@@ -34,9 +36,18 @@ fn create_tables(conn: &Connection) -> Result<(), LanternError> {
             is_default INTEGER NOT NULL DEFAULT 0
         );
 
+        CREATE TABLE IF NOT EXISTS terminal_tab (
+            id TEXT PRIMARY KEY,
+            repo_id TEXT NOT NULL REFERENCES repo(id) ON DELETE CASCADE,
+            title TEXT NOT NULL,
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            active_session_id TEXT REFERENCES terminal_session(id) ON DELETE SET NULL
+        );
+
         CREATE TABLE IF NOT EXISTS terminal_session (
             id TEXT PRIMARY KEY,
             repo_id TEXT NOT NULL REFERENCES repo(id) ON DELETE CASCADE,
+            tab_id TEXT NOT NULL REFERENCES terminal_tab(id) ON DELETE CASCADE,
             title TEXT NOT NULL,
             shell TEXT,
             sort_order INTEGER NOT NULL DEFAULT 0
@@ -57,11 +68,11 @@ fn create_tables(conn: &Connection) -> Result<(), LanternError> {
 
         CREATE TABLE IF NOT EXISTS active_tab (
             repo_id TEXT PRIMARY KEY REFERENCES repo(id) ON DELETE CASCADE,
-            session_id TEXT NOT NULL REFERENCES terminal_session(id) ON DELETE CASCADE
+            tab_id TEXT NOT NULL REFERENCES terminal_tab(id) ON DELETE CASCADE
         );
 
         CREATE TABLE IF NOT EXISTS native_terminal_split (
-            repo_id TEXT PRIMARY KEY REFERENCES repo(id) ON DELETE CASCADE,
+            tab_id TEXT PRIMARY KEY REFERENCES terminal_tab(id) ON DELETE CASCADE,
             visible_session_ids TEXT NOT NULL DEFAULT '[]',
             orientation TEXT NOT NULL DEFAULT 'horizontal',
             divider_position INTEGER,
@@ -112,9 +123,12 @@ fn ensure_schema_version(conn: &Connection) -> Result<i32, LanternError> {
         return Ok(version);
     }
 
-    let inferred_version = if table_has_column(conn, "native_terminal_split", "divider_positions")?
+    let inferred_version = if table_has_column(conn, "terminal_session", "tab_id")?
+        && table_has_column(conn, "active_tab", "tab_id")?
     {
         CURRENT_SCHEMA_VERSION
+    } else if table_has_column(conn, "native_terminal_split", "divider_positions")? {
+        6
     } else if table_has_column(conn, "app_state", "collapsed_group_ids")? {
         4
     } else if table_has_column(conn, "repo", "group_id")? {
@@ -162,11 +176,6 @@ fn migrate_schema(conn: &Connection) -> Result<(), LanternError> {
         )?;
     }
 
-    conn.execute(
-        "INSERT OR REPLACE INTO schema_version (version) VALUES (?1)",
-        params![CURRENT_SCHEMA_VERSION],
-    )?;
-
     if !table_has_column(conn, "native_terminal_split", "orientation")? {
         conn.execute(
             "ALTER TABLE native_terminal_split ADD COLUMN orientation TEXT NOT NULL DEFAULT 'horizontal'",
@@ -195,6 +204,400 @@ fn migrate_schema(conn: &Connection) -> Result<(), LanternError> {
         )?;
     }
 
+    if version < 7
+        || !table_has_column(conn, "terminal_session", "tab_id")?
+        || !table_has_column(conn, "active_tab", "tab_id")?
+    {
+        migrate_tabs_and_split_state(conn)?;
+    }
+
+    conn.execute(
+        "INSERT OR REPLACE INTO schema_version (version) VALUES (?1)",
+        params![CURRENT_SCHEMA_VERSION],
+    )?;
+
+    Ok(())
+}
+
+#[derive(Clone)]
+struct LegacySessionRecord {
+    id: String,
+    repo_id: String,
+    title: String,
+    shell: Option<String>,
+    sort_order: i32,
+}
+
+#[derive(Clone)]
+struct LegacySplitRecord {
+    visible_session_ids: Vec<String>,
+    orientation: NativeSplitOrientation,
+    divider_positions: Vec<i32>,
+}
+
+fn migrate_tabs_and_split_state(conn: &Connection) -> Result<(), LanternError> {
+    let repo_ids = load_legacy_repo_ids(conn)?;
+    let sessions = load_legacy_sessions(conn)?;
+    let active_tab_by_repo_id = load_legacy_active_tab_map(conn)?;
+    let split_state_by_repo_id = load_legacy_split_map(conn)?;
+
+    conn.execute_batch(
+        "
+        PRAGMA foreign_keys=OFF;
+        BEGIN IMMEDIATE;
+
+        DELETE FROM terminal_tab;
+
+        CREATE TABLE terminal_session_v2 (
+            id TEXT PRIMARY KEY,
+            repo_id TEXT NOT NULL REFERENCES repo(id) ON DELETE CASCADE,
+            tab_id TEXT NOT NULL REFERENCES terminal_tab(id) ON DELETE CASCADE,
+            title TEXT NOT NULL,
+            shell TEXT,
+            sort_order INTEGER NOT NULL DEFAULT 0
+        );
+
+        CREATE TABLE active_tab_v2 (
+            repo_id TEXT PRIMARY KEY REFERENCES repo(id) ON DELETE CASCADE,
+            tab_id TEXT NOT NULL REFERENCES terminal_tab(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE native_terminal_split_v2 (
+            tab_id TEXT PRIMARY KEY REFERENCES terminal_tab(id) ON DELETE CASCADE,
+            visible_session_ids TEXT NOT NULL DEFAULT '[]',
+            orientation TEXT NOT NULL DEFAULT 'horizontal',
+            divider_position INTEGER,
+            secondary_divider_position INTEGER,
+            divider_positions TEXT NOT NULL DEFAULT '[]'
+        );
+        ",
+    )?;
+
+    for repo_id in repo_ids {
+        migrate_repo_tabs(
+            conn,
+            repo_id.as_str(),
+            sessions
+                .get(repo_id.as_str())
+                .map(Vec::as_slice)
+                .unwrap_or(&[]),
+            active_tab_by_repo_id.get(repo_id.as_str()).map(String::as_str),
+            split_state_by_repo_id.get(repo_id.as_str()),
+        )?;
+    }
+
+    conn.execute_batch(
+        "
+        DROP TABLE active_tab;
+        ALTER TABLE active_tab_v2 RENAME TO active_tab;
+
+        DROP TABLE native_terminal_split;
+        ALTER TABLE native_terminal_split_v2 RENAME TO native_terminal_split;
+
+        DROP TABLE terminal_session;
+        ALTER TABLE terminal_session_v2 RENAME TO terminal_session;
+
+        COMMIT;
+        PRAGMA foreign_keys=ON;
+        ",
+    )?;
+
+    Ok(())
+}
+
+fn load_legacy_repo_ids(conn: &Connection) -> Result<Vec<String>, LanternError> {
+    let mut stmt = conn.prepare("SELECT id FROM repo ORDER BY sort_order ASC, name ASC")?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+}
+
+fn load_legacy_sessions(
+    conn: &Connection,
+) -> Result<HashMap<String, Vec<LegacySessionRecord>>, LanternError> {
+    let mut stmt = conn.prepare(
+        "SELECT id, repo_id, title, shell, sort_order
+         FROM terminal_session
+         ORDER BY repo_id ASC, sort_order ASC, title ASC",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok(LegacySessionRecord {
+            id: row.get(0)?,
+            repo_id: row.get(1)?,
+            title: row.get(2)?,
+            shell: row.get(3)?,
+            sort_order: row.get(4)?,
+        })
+    })?;
+
+    let mut sessions_by_repo_id = HashMap::new();
+    for row in rows {
+        let session = row?;
+        sessions_by_repo_id
+            .entry(session.repo_id.clone())
+            .or_insert_with(Vec::new)
+            .push(session);
+    }
+    Ok(sessions_by_repo_id)
+}
+
+fn load_legacy_active_tab_map(conn: &Connection) -> Result<HashMap<String, String>, LanternError> {
+    let active_column = if table_has_column(conn, "active_tab", "tab_id")? {
+        "tab_id"
+    } else {
+        "session_id"
+    };
+    let query = format!("SELECT repo_id, {active_column} FROM active_tab ORDER BY repo_id ASC");
+    let mut stmt = conn.prepare(query.as_str())?;
+    let rows = stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?;
+    let mut values = HashMap::new();
+    for row in rows {
+        let (repo_id, active_id) = row?;
+        values.insert(repo_id, active_id);
+    }
+    Ok(values)
+}
+
+fn load_legacy_split_map(conn: &Connection) -> Result<HashMap<String, LegacySplitRecord>, LanternError> {
+    if !table_has_column(conn, "native_terminal_split", "visible_session_ids")? {
+        return Ok(HashMap::new());
+    }
+
+    let key_column = if table_has_column(conn, "native_terminal_split", "repo_id")? {
+        "repo_id"
+    } else {
+        "tab_id"
+    };
+    let query = format!(
+        "SELECT {key_column}, visible_session_ids, orientation, divider_position, secondary_divider_position, divider_positions
+         FROM native_terminal_split
+         ORDER BY {key_column} ASC"
+    );
+    let mut stmt = conn.prepare(query.as_str())?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, Option<i32>>(3)?,
+            row.get::<_, Option<i32>>(4)?,
+            row.get::<_, String>(5)?,
+        ))
+    })?;
+
+    let mut split_state = HashMap::new();
+    for row in rows {
+        let (
+            key,
+            visible_session_ids,
+            orientation,
+            divider_position,
+            secondary_divider_position,
+            divider_positions,
+        ) = row?;
+        let mut divider_positions =
+            serde_json::from_str::<Vec<i32>>(&divider_positions).unwrap_or_else(|_| Vec::new());
+        if divider_positions.is_empty() {
+            if let Some(divider_position) = divider_position {
+                divider_positions.push(divider_position);
+            }
+            if let Some(secondary_divider_position) = secondary_divider_position {
+                divider_positions.push(secondary_divider_position);
+            }
+        }
+        split_state.insert(
+            key,
+            LegacySplitRecord {
+                visible_session_ids: serde_json::from_str(&visible_session_ids)
+                    .unwrap_or_else(|_| Vec::new()),
+                orientation: parse_native_split_orientation(&orientation),
+                divider_positions,
+            },
+        );
+    }
+    Ok(split_state)
+}
+
+fn migrate_repo_tabs(
+    conn: &Connection,
+    repo_id: &str,
+    sessions: &[LegacySessionRecord],
+    persisted_active_session_id: Option<&str>,
+    legacy_split: Option<&LegacySplitRecord>,
+) -> Result<(), LanternError> {
+    if sessions.is_empty() {
+        return Ok(());
+    }
+
+    let session_by_id = sessions
+        .iter()
+        .map(|session| (session.id.as_str(), session))
+        .collect::<HashMap<_, _>>();
+    let split_session_ids = legacy_split
+        .map(|split| {
+            split
+                .visible_session_ids
+                .iter()
+                .filter(|session_id| session_by_id.contains_key(session_id.as_str()))
+                .fold(Vec::new(), |mut ids, session_id| {
+                    if !ids.iter().any(|existing| existing == session_id) {
+                        ids.push(session_id.clone());
+                    }
+                    ids
+                })
+        })
+        .unwrap_or_default();
+
+    let mut migrated_tabs = Vec::new();
+
+    if !split_session_ids.is_empty() {
+        let split_active_session_id = persisted_active_session_id
+            .filter(|session_id| split_session_ids.iter().any(|id| id == *session_id))
+            .map(str::to_string)
+            .or_else(|| split_session_ids.first().cloned());
+        let split_sort_order = split_session_ids
+            .iter()
+            .filter_map(|session_id| session_by_id.get(session_id.as_str()).map(|session| session.sort_order))
+            .min()
+            .unwrap_or(0);
+        let split_title = split_active_session_id
+            .as_deref()
+            .and_then(|session_id| session_by_id.get(session_id).map(|session| session.title.clone()))
+            .unwrap_or_else(|| "Terminal".to_string());
+        let tab_id = Uuid::new_v4().to_string();
+
+        insert_terminal_tab(
+            conn,
+            &TerminalTab {
+                id: tab_id.clone(),
+                repo_id: repo_id.to_string(),
+                title: split_title,
+                sort_order: split_sort_order,
+                active_session_id: split_active_session_id.clone(),
+            },
+        )?;
+
+        for (sort_order, session_id) in split_session_ids.iter().enumerate() {
+            let session = session_by_id[session_id.as_str()];
+            insert_terminal_session(conn, session, tab_id.as_str(), sort_order as i32)?;
+        }
+
+        if let Some(legacy_split) = legacy_split {
+            insert_native_split_state(
+                conn,
+                tab_id.as_str(),
+                &NativeSplitState {
+                    visible_session_ids: split_session_ids.clone(),
+                    orientation: legacy_split.orientation,
+                    divider_positions: legacy_split.divider_positions.clone(),
+                },
+            )?;
+        }
+
+        migrated_tabs.push((tab_id, split_sort_order));
+    }
+
+    for session in sessions {
+        if split_session_ids.iter().any(|session_id| session_id == &session.id) {
+            continue;
+        }
+
+        let tab_id = Uuid::new_v4().to_string();
+        insert_terminal_tab(
+            conn,
+            &TerminalTab {
+                id: tab_id.clone(),
+                repo_id: repo_id.to_string(),
+                title: session.title.clone(),
+                sort_order: session.sort_order,
+                active_session_id: Some(session.id.clone()),
+            },
+        )?;
+        insert_terminal_session(conn, session, tab_id.as_str(), 0)?;
+        migrated_tabs.push((tab_id, session.sort_order));
+    }
+
+    migrated_tabs.sort_by(|left, right| left.1.cmp(&right.1));
+
+    let active_tab_id = persisted_active_session_id
+        .and_then(|active_session_id| {
+            conn.query_row(
+                "SELECT tab_id FROM terminal_session_v2 WHERE id = ?1",
+                params![active_session_id],
+                |row| row.get::<_, String>(0),
+            )
+            .ok()
+        })
+        .or_else(|| migrated_tabs.first().map(|(tab_id, _)| tab_id.clone()));
+
+    if let Some(active_tab_id) = active_tab_id {
+        conn.execute(
+            "INSERT INTO active_tab_v2 (repo_id, tab_id) VALUES (?1, ?2)",
+            params![repo_id, active_tab_id],
+        )?;
+    }
+
+    Ok(())
+}
+
+fn insert_terminal_tab(conn: &Connection, tab: &TerminalTab) -> Result<(), LanternError> {
+    conn.execute(
+        "INSERT INTO terminal_tab (id, repo_id, title, sort_order, active_session_id)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![
+            tab.id,
+            tab.repo_id,
+            tab.title,
+            tab.sort_order,
+            tab.active_session_id,
+        ],
+    )?;
+    Ok(())
+}
+
+fn insert_terminal_session(
+    conn: &Connection,
+    session: &LegacySessionRecord,
+    tab_id: &str,
+    sort_order: i32,
+) -> Result<(), LanternError> {
+    conn.execute(
+        "INSERT INTO terminal_session_v2 (id, repo_id, tab_id, title, shell, sort_order)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![
+            session.id,
+            session.repo_id,
+            tab_id,
+            session.title,
+            session.shell,
+            sort_order,
+        ],
+    )?;
+    Ok(())
+}
+
+fn insert_native_split_state(
+    conn: &Connection,
+    tab_id: &str,
+    split_state: &NativeSplitState,
+) -> Result<(), LanternError> {
+    conn.execute(
+        "INSERT INTO native_terminal_split_v2 (
+            tab_id,
+            visible_session_ids,
+            orientation,
+            divider_position,
+            secondary_divider_position,
+            divider_positions
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![
+            tab_id,
+            serde_json::to_string(&split_state.visible_session_ids)?,
+            native_split_orientation_value(split_state.orientation),
+            split_state.divider_positions.first().copied(),
+            split_state.divider_positions.get(1).copied(),
+            serde_json::to_string(&split_state.divider_positions)?,
+        ],
+    )?;
     Ok(())
 }
 
@@ -368,34 +771,29 @@ pub fn set_repo_group(
     Ok(())
 }
 
-pub fn list_sessions(conn: &DbConn, repo_id: &str) -> Result<Vec<TerminalSession>, LanternError> {
+pub fn list_tabs(conn: &DbConn, repo_id: &str) -> Result<Vec<TerminalTab>, LanternError> {
     let db = conn.lock().unwrap();
     let mut stmt = db.prepare(
-        "SELECT id, repo_id, title, shell, sort_order
-         FROM terminal_session
+        "SELECT id, repo_id, title, sort_order, active_session_id
+         FROM terminal_tab
          WHERE repo_id = ?1
          ORDER BY sort_order ASC, title ASC",
     )?;
 
     let rows = stmt.query_map(params![repo_id], |row| {
-        Ok(TerminalSession {
+        Ok(TerminalTab {
             id: row.get(0)?,
             repo_id: row.get(1)?,
             title: row.get(2)?,
-            shell: row.get(3)?,
-            sort_order: row.get(4)?,
+            sort_order: row.get(3)?,
+            active_session_id: row.get(4)?,
         })
     })?;
 
     rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
 }
 
-pub fn create_session(
-    conn: &DbConn,
-    repo_id: &str,
-    title: &str,
-    shell: Option<&str>,
-) -> Result<TerminalSession, LanternError> {
+pub fn create_tab(conn: &DbConn, repo_id: &str, title: &str) -> Result<TerminalTab, LanternError> {
     let db = conn.lock().unwrap();
     let repo_exists: bool = db.query_row(
         "SELECT EXISTS(SELECT 1 FROM repo WHERE id = ?1)",
@@ -408,24 +806,139 @@ pub fn create_session(
     }
 
     let sort_order: i32 = db.query_row(
-        "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM terminal_session WHERE repo_id = ?1",
+        "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM terminal_tab WHERE repo_id = ?1",
         params![repo_id],
+        |row| row.get(0),
+    )?;
+    let tab = TerminalTab {
+        id: Uuid::new_v4().to_string(),
+        repo_id: repo_id.to_string(),
+        title: title.to_string(),
+        sort_order,
+        active_session_id: None,
+    };
+
+    db.execute(
+        "INSERT INTO terminal_tab (id, repo_id, title, sort_order, active_session_id)
+         VALUES (?1, ?2, ?3, ?4, NULL)",
+        params![tab.id, tab.repo_id, tab.title, tab.sort_order],
+    )?;
+
+    Ok(tab)
+}
+
+pub fn close_tab(conn: &DbConn, tab_id: &str) -> Result<(), LanternError> {
+    let db = conn.lock().unwrap();
+    let affected_rows = db.execute("DELETE FROM terminal_tab WHERE id = ?1", params![tab_id])?;
+
+    if affected_rows == 0 {
+        return Err(LanternError::TabNotFound(tab_id.to_string()));
+    }
+
+    Ok(())
+}
+
+pub fn rename_tab(conn: &DbConn, tab_id: &str, title: &str) -> Result<(), LanternError> {
+    let db = conn.lock().unwrap();
+    let affected_rows = db.execute(
+        "UPDATE terminal_tab SET title = ?1 WHERE id = ?2",
+        params![title, tab_id],
+    )?;
+
+    if affected_rows == 0 {
+        return Err(LanternError::TabNotFound(tab_id.to_string()));
+    }
+
+    Ok(())
+}
+
+pub fn reorder_tabs(conn: &DbConn, repo_id: &str, tab_ids: &[String]) -> Result<(), LanternError> {
+    let db = conn.lock().unwrap();
+    for (sort_order, tab_id) in tab_ids.iter().enumerate() {
+        db.execute(
+            "UPDATE terminal_tab SET sort_order = ?1 WHERE id = ?2 AND repo_id = ?3",
+            params![sort_order as i32, tab_id, repo_id],
+        )?;
+    }
+
+    Ok(())
+}
+
+pub fn list_sessions(conn: &DbConn, tab_id: &str) -> Result<Vec<TerminalSession>, LanternError> {
+    let db = conn.lock().unwrap();
+    let mut stmt = db.prepare(
+        "SELECT id, repo_id, tab_id, title, shell, sort_order
+         FROM terminal_session
+         WHERE tab_id = ?1
+         ORDER BY sort_order ASC, title ASC",
+    )?;
+
+    let rows = stmt.query_map(params![tab_id], |row| {
+        Ok(TerminalSession {
+            id: row.get(0)?,
+            repo_id: row.get(1)?,
+            tab_id: row.get(2)?,
+            title: row.get(3)?,
+            shell: row.get(4)?,
+            sort_order: row.get(5)?,
+        })
+    })?;
+
+    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+}
+
+pub fn create_session(
+    conn: &DbConn,
+    tab_id: &str,
+    title: &str,
+    shell: Option<&str>,
+) -> Result<TerminalSession, LanternError> {
+    let db = conn.lock().unwrap();
+    let repo_id: String = db
+        .query_row(
+            "SELECT repo_id FROM terminal_tab WHERE id = ?1",
+            params![tab_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| {
+            if matches!(error, rusqlite::Error::QueryReturnedNoRows) {
+                LanternError::TabNotFound(tab_id.to_string())
+            } else {
+                LanternError::from(error)
+            }
+        })?;
+
+    let tab_exists: bool = db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM terminal_tab WHERE id = ?1)",
+        params![tab_id],
+        |row| row.get(0),
+    )?;
+
+    if !tab_exists {
+        return Err(LanternError::TabNotFound(tab_id.to_string()));
+    }
+
+    let sort_order: i32 = db.query_row(
+        "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM terminal_session WHERE tab_id = ?1",
+        params![tab_id],
         |row| row.get(0),
     )?;
     let session = TerminalSession {
         id: Uuid::new_v4().to_string(),
-        repo_id: repo_id.to_string(),
+        repo_id,
+        tab_id: tab_id.to_string(),
         title: title.to_string(),
         shell: shell.map(str::to_string),
         sort_order,
     };
 
     db.execute(
-        "INSERT INTO terminal_session (id, repo_id, title, shell, sort_order)
-         VALUES (?1, ?2, ?3, ?4, ?5)",
+        "INSERT INTO terminal_session (id, repo_id, tab_id, title, shell, sort_order)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         params![
             session.id,
             session.repo_id,
+            session.tab_id,
             session.title,
             session.shell,
             session.sort_order,
@@ -465,14 +978,14 @@ pub fn rename_session(conn: &DbConn, session_id: &str, title: &str) -> Result<()
 
 pub fn reorder_sessions(
     conn: &DbConn,
-    repo_id: &str,
+    tab_id: &str,
     session_ids: &[String],
 ) -> Result<(), LanternError> {
     let db = conn.lock().unwrap();
     for (sort_order, session_id) in session_ids.iter().enumerate() {
         db.execute(
-            "UPDATE terminal_session SET sort_order = ?1 WHERE id = ?2 AND repo_id = ?3",
-            params![sort_order as i32, session_id, repo_id],
+            "UPDATE terminal_session SET sort_order = ?1 WHERE id = ?2 AND tab_id = ?3",
+            params![sort_order as i32, session_id, tab_id],
         )?;
     }
 
@@ -482,7 +995,7 @@ pub fn reorder_sessions(
 pub fn get_active_tab(conn: &DbConn, repo_id: &str) -> Result<Option<String>, LanternError> {
     let db = conn.lock().unwrap();
     db.query_row(
-        "SELECT session_id FROM active_tab WHERE repo_id = ?1",
+        "SELECT tab_id FROM active_tab WHERE repo_id = ?1",
         params![repo_id],
         |row| row.get(0),
     )
@@ -496,12 +1009,43 @@ pub fn get_active_tab(conn: &DbConn, repo_id: &str) -> Result<Option<String>, La
     })
 }
 
-pub fn set_active_tab(conn: &DbConn, repo_id: &str, session_id: &str) -> Result<(), LanternError> {
+pub fn set_active_tab(conn: &DbConn, repo_id: &str, tab_id: &str) -> Result<(), LanternError> {
     let db = conn.lock().unwrap();
     db.execute(
-        "INSERT OR REPLACE INTO active_tab (repo_id, session_id) VALUES (?1, ?2)",
-        params![repo_id, session_id],
+        "INSERT OR REPLACE INTO active_tab (repo_id, tab_id) VALUES (?1, ?2)",
+        params![repo_id, tab_id],
     )?;
+    Ok(())
+}
+
+pub fn get_active_session(conn: &DbConn, tab_id: &str) -> Result<Option<String>, LanternError> {
+    let db = conn.lock().unwrap();
+    db.query_row(
+        "SELECT active_session_id FROM terminal_tab WHERE id = ?1",
+        params![tab_id],
+        |row| row.get(0),
+    )
+    .map(Some)
+    .or_else(|error| {
+        if matches!(error, rusqlite::Error::QueryReturnedNoRows) {
+            Ok(None)
+        } else {
+            Err(error.into())
+        }
+    })
+}
+
+pub fn set_active_session(conn: &DbConn, tab_id: &str, session_id: &str) -> Result<(), LanternError> {
+    let db = conn.lock().unwrap();
+    let affected_rows = db.execute(
+        "UPDATE terminal_tab SET active_session_id = ?1 WHERE id = ?2",
+        params![session_id, tab_id],
+    )?;
+
+    if affected_rows == 0 {
+        return Err(LanternError::TabNotFound(tab_id.to_string()));
+    }
+
     Ok(())
 }
 
@@ -569,19 +1113,19 @@ pub fn load_native_split_state(
 ) -> Result<HashMap<String, NativeSplitState>, LanternError> {
     let db = conn.lock().unwrap();
     let mut stmt = db.prepare(
-        "SELECT repo_id, visible_session_ids, orientation, divider_position, secondary_divider_position, divider_positions
+        "SELECT tab_id, visible_session_ids, orientation, divider_position, secondary_divider_position, divider_positions
          FROM native_terminal_split
-         ORDER BY repo_id ASC",
+         ORDER BY tab_id ASC",
     )?;
     let rows = stmt.query_map([], |row| {
-        let repo_id: String = row.get(0)?;
+        let tab_id: String = row.get(0)?;
         let visible_session_ids: String = row.get(1)?;
         let orientation: String = row.get(2)?;
         let divider_position: Option<i32> = row.get(3)?;
         let secondary_divider_position: Option<i32> = row.get(4)?;
         let divider_positions: String = row.get(5)?;
         Ok((
-            repo_id,
+            tab_id,
             visible_session_ids,
             orientation,
             divider_position,
@@ -593,7 +1137,7 @@ pub fn load_native_split_state(
     let mut split_state = HashMap::new();
     for row in rows {
         let (
-            repo_id,
+            tab_id,
             visible_session_ids,
             orientation,
             divider_position,
@@ -611,7 +1155,7 @@ pub fn load_native_split_state(
             }
         }
         split_state.insert(
-            repo_id,
+            tab_id,
             NativeSplitState {
                 visible_session_ids: serde_json::from_str(&visible_session_ids)
                     .unwrap_or_else(|_| Vec::new()),
@@ -626,21 +1170,21 @@ pub fn load_native_split_state(
 
 pub fn save_native_split_state(
     conn: &DbConn,
-    repo_id: &str,
+    tab_id: &str,
     split_state: &NativeSplitState,
 ) -> Result<(), LanternError> {
     let db = conn.lock().unwrap();
     db.execute(
         "INSERT OR REPLACE INTO native_terminal_split (
-            repo_id,
+            tab_id,
             visible_session_ids,
             orientation,
             divider_position,
             secondary_divider_position,
             divider_positions
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         params![
-            repo_id,
+            tab_id,
             serde_json::to_string(&split_state.visible_session_ids)?,
             native_split_orientation_value(split_state.orientation),
             split_state.divider_positions.first().copied(),
@@ -651,11 +1195,11 @@ pub fn save_native_split_state(
     Ok(())
 }
 
-pub fn delete_native_split_state(conn: &DbConn, repo_id: &str) -> Result<(), LanternError> {
+pub fn delete_native_split_state(conn: &DbConn, tab_id: &str) -> Result<(), LanternError> {
     let db = conn.lock().unwrap();
     db.execute(
-        "DELETE FROM native_terminal_split WHERE repo_id = ?1",
-        params![repo_id],
+        "DELETE FROM native_terminal_split WHERE tab_id = ?1",
+        params![tab_id],
     )?;
     Ok(())
 }
@@ -722,6 +1266,21 @@ mod tests {
         .unwrap();
     }
 
+    fn insert_legacy_session(
+        conn: &Connection,
+        session_id: &str,
+        repo_id: &str,
+        title: &str,
+        sort_order: i32,
+    ) {
+        conn.execute(
+            "INSERT INTO terminal_session (id, repo_id, title, shell, sort_order)
+             VALUES (?1, ?2, ?3, NULL, ?4)",
+            params![session_id, repo_id, title, sort_order],
+        )
+        .unwrap();
+    }
+
     fn add_temp_repo(conn: &DbConn, label: &str) -> Repo {
         let dir = tempdir().unwrap();
         let path = dir.keep().join(label);
@@ -756,19 +1315,22 @@ mod tests {
         let dir = tempdir().unwrap();
         let conn = init_db(Some(dir.path().join("lantern.db"))).unwrap();
         insert_repo(&conn, "repo-1");
+        let tab = create_tab(&conn, "repo-1", "Terminal 1").unwrap();
 
-        let session = create_session(&conn, "repo-1", "Terminal 1", Some("/bin/zsh")).unwrap();
+        let session =
+            create_session(&conn, tab.id.as_str(), "Terminal 1", Some("/bin/zsh")).unwrap();
         assert_eq!(session.repo_id, "repo-1");
+        assert_eq!(session.tab_id, tab.id);
         assert_eq!(session.title, "Terminal 1");
         assert_eq!(session.shell.as_deref(), Some("/bin/zsh"));
         assert_eq!(session.sort_order, 0);
 
-        let sessions = list_sessions(&conn, "repo-1").unwrap();
+        let sessions = list_sessions(&conn, tab.id.as_str()).unwrap();
         assert_eq!(sessions, vec![session.clone()]);
 
         close_session(&conn, session.id.as_str()).unwrap();
 
-        assert!(list_sessions(&conn, "repo-1").unwrap().is_empty());
+        assert!(list_sessions(&conn, tab.id.as_str()).unwrap().is_empty());
     }
 
     #[test]
@@ -793,12 +1355,13 @@ mod tests {
         let dir = tempdir().unwrap();
         let conn = init_db(Some(dir.path().join("lantern.db"))).unwrap();
         let repo = add_temp_repo(&conn, "repo");
-        let session = create_session(&conn, repo.id.as_str(), "Terminal 1", None).unwrap();
+        let tab = create_tab(&conn, repo.id.as_str(), "Terminal 1").unwrap();
+        let session = create_session(&conn, tab.id.as_str(), "Terminal 1", None).unwrap();
 
         remove_repo(&conn, repo.id.as_str()).unwrap();
 
         assert!(list_repos(&conn).unwrap().is_empty());
-        assert!(list_sessions(&conn, repo.id.as_str()).unwrap().is_empty());
+        assert!(list_tabs(&conn, repo.id.as_str()).unwrap().is_empty());
         assert!(matches!(
             close_session(&conn, session.id.as_str()),
             Err(LanternError::SessionNotFound(_))
@@ -810,11 +1373,12 @@ mod tests {
         let dir = tempdir().unwrap();
         let conn = init_db(Some(dir.path().join("lantern.db"))).unwrap();
         let repo = add_temp_repo(&conn, "repo");
-        let session = create_session(&conn, repo.id.as_str(), "Terminal 1", None).unwrap();
+        let tab = create_tab(&conn, repo.id.as_str(), "Terminal 1").unwrap();
+        let session = create_session(&conn, tab.id.as_str(), "Terminal 1", None).unwrap();
 
         rename_session(&conn, session.id.as_str(), "Logs").unwrap();
 
-        let renamed_session = list_sessions(&conn, repo.id.as_str())
+        let renamed_session = list_sessions(&conn, tab.id.as_str())
             .unwrap()
             .into_iter()
             .find(|saved_session| saved_session.id == session.id)
@@ -827,18 +1391,19 @@ mod tests {
         let dir = tempdir().unwrap();
         let conn = init_db(Some(dir.path().join("lantern.db"))).unwrap();
         let repo = add_temp_repo(&conn, "repo");
-        let first = create_session(&conn, repo.id.as_str(), "Terminal 1", None).unwrap();
-        let second = create_session(&conn, repo.id.as_str(), "Terminal 2", None).unwrap();
-        let third = create_session(&conn, repo.id.as_str(), "Terminal 3", None).unwrap();
+        let tab = create_tab(&conn, repo.id.as_str(), "Terminal 1").unwrap();
+        let first = create_session(&conn, tab.id.as_str(), "Terminal 1", None).unwrap();
+        let second = create_session(&conn, tab.id.as_str(), "Terminal 2", None).unwrap();
+        let third = create_session(&conn, tab.id.as_str(), "Terminal 3", None).unwrap();
 
         reorder_sessions(
             &conn,
-            repo.id.as_str(),
+            tab.id.as_str(),
             &[third.id.clone(), first.id.clone(), second.id.clone()],
         )
         .unwrap();
 
-        let ordered_session_ids = list_sessions(&conn, repo.id.as_str())
+        let ordered_session_ids = list_sessions(&conn, tab.id.as_str())
             .unwrap()
             .into_iter()
             .map(|session| session.id)
@@ -907,10 +1472,11 @@ mod tests {
         let dir = tempdir().unwrap();
         let conn = init_db(Some(dir.path().join("lantern.db"))).unwrap();
         insert_repo(&conn, "repo-1");
+        let tab = create_tab(&conn, "repo-1", "Terminal 1").unwrap();
 
         save_native_split_state(
             &conn,
-            "repo-1",
+            tab.id.as_str(),
             &NativeSplitState {
                 visible_session_ids: vec![
                     "tab-1".to_string(),
@@ -925,7 +1491,7 @@ mod tests {
 
         let split_state = load_native_split_state(&conn).unwrap();
         assert_eq!(
-            split_state.get("repo-1"),
+            split_state.get(tab.id.as_str()),
             Some(&NativeSplitState {
                 visible_session_ids: vec![
                     "tab-1".to_string(),
@@ -937,11 +1503,11 @@ mod tests {
             })
         );
 
-        delete_native_split_state(&conn, "repo-1").unwrap();
+        delete_native_split_state(&conn, tab.id.as_str()).unwrap();
 
         assert!(load_native_split_state(&conn)
             .unwrap()
-            .get("repo-1")
+            .get(tab.id.as_str())
             .is_none());
     }
 
@@ -962,6 +1528,19 @@ mod tests {
                     sort_order INTEGER NOT NULL DEFAULT 0,
                     group_id TEXT,
                     is_default INTEGER NOT NULL DEFAULT 0
+                );
+
+                CREATE TABLE terminal_session (
+                    id TEXT PRIMARY KEY,
+                    repo_id TEXT NOT NULL REFERENCES repo(id) ON DELETE CASCADE,
+                    title TEXT NOT NULL,
+                    shell TEXT,
+                    sort_order INTEGER NOT NULL DEFAULT 0
+                );
+
+                CREATE TABLE active_tab (
+                    repo_id TEXT PRIMARY KEY REFERENCES repo(id) ON DELETE CASCADE,
+                    session_id TEXT NOT NULL REFERENCES terminal_session(id) ON DELETE CASCADE
                 );
 
                 CREATE TABLE native_terminal_split (
@@ -992,6 +1571,15 @@ mod tests {
                 ],
             )
             .unwrap();
+        insert_legacy_session(&legacy_conn, "tab-1", "repo-1", "Terminal 1", 0);
+        insert_legacy_session(&legacy_conn, "tab-2", "repo-1", "Terminal 2", 1);
+        insert_legacy_session(&legacy_conn, "tab-3", "repo-1", "Terminal 3", 2);
+        legacy_conn
+            .execute(
+                "INSERT INTO active_tab (repo_id, session_id) VALUES (?1, ?2)",
+                params!["repo-1", "tab-1"],
+            )
+            .unwrap();
         legacy_conn
             .execute(
                 "INSERT INTO native_terminal_split (
@@ -1017,8 +1605,9 @@ mod tests {
 
         let conn = init_db(Some(path)).unwrap();
         let split_state = load_native_split_state(&conn).unwrap();
+        assert_eq!(split_state.len(), 1);
         assert_eq!(
-            split_state.get("repo-1"),
+            split_state.values().next(),
             Some(&NativeSplitState {
                 visible_session_ids: vec![
                     "tab-1".to_string(),

@@ -10,7 +10,7 @@ pub use config::UserConfig;
 pub use db::DbConn;
 pub use error::LanternError;
 pub use models::{
-    AppLayout, NativeSplitOrientation, NativeSplitState, Repo, RepoWorkspace, TerminalSession,
-    WorkspaceSnapshot,
+    AppLayout, NativeSplitOrientation, NativeSplitState, Repo, RepoWorkspace, TabWorkspace,
+    TerminalSession, TerminalTab, WorkspaceSnapshot,
 };
 pub use workspace::WorkspaceState;

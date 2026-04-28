@@ -4,12 +4,12 @@ use crate::theme::{
     theme_is_dark,
 };
 use adw::prelude::*;
-use gtk::gdk;
 use gtk::gio;
 use lantern_core::{
     db, git, AppLayout, DbConn, LanternError, NativeSplitOrientation, NativeSplitState,
     RepoWorkspace, UserConfig, WorkspaceState,
 };
+use panel::prelude::*;
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -19,6 +19,7 @@ use vte::prelude::TerminalExt;
 
 pub fn run() {
     adw::init().expect("failed to initialize libadwaita");
+    panel::init();
 
     let app = adw::Application::builder()
         .application_id("sh.lantern.NativeLinux")
@@ -51,9 +52,10 @@ struct NativeApp {
     new_tab_button: gtk::Button,
     search_button: gtk::Button,
     menu_button: gtk::MenuButton,
+    tab_prev_button: gtk::Button,
+    tab_next_button: gtk::Button,
     // Tab management
-    tab_view: adw::TabView,
-    tab_bar_widget: adw::TabBar,
+    tab_view: panel::Frame,
     terminal_layout_box: gtk::Box,
     surface_parking_box: gtk::Box,
     // Search
@@ -87,7 +89,7 @@ struct NativeApp {
     process_refresh_source_id: RefCell<Option<gtk::glib::SourceId>>,
     layout_persist_source_id: RefCell<Option<gtk::glib::SourceId>>,
     session_command_running: RefCell<HashMap<String, bool>>,
-    repo_split_state: RefCell<HashMap<String, NativeSplitState>>,
+    tab_split_state: RefCell<HashMap<String, NativeSplitState>>,
     closing_session_ids: RefCell<HashSet<String>>,
     rebuilding_tabs: Cell<bool>,
     paste_in_progress: Cell<bool>,
@@ -99,7 +101,7 @@ impl NativeApp {
         let config = UserConfig::load();
         let db = db::init_db(None).expect("failed to initialize Lantern database");
         let workspace = WorkspaceState::load(&db).unwrap_or_default();
-        let repo_split_state = db::load_native_split_state(&db).unwrap_or_default();
+        let tab_split_state = db::load_native_split_state(&db).unwrap_or_default();
 
         let window = adw::ApplicationWindow::builder()
             .application(app)
@@ -117,9 +119,18 @@ impl NativeApp {
         {
             let xdg_icons = gtk::glib::user_data_dir().join("icons/hicolor");
             for (size, bytes) in [
-                ("256x256", &include_bytes!("../assets/lantern_logo_256.png")[..]),
-                ("128x128", &include_bytes!("../assets/lantern_logo_128.png")[..]),
-                ("32x32", &include_bytes!("../assets/lantern_logo_32.png")[..]),
+                (
+                    "256x256",
+                    &include_bytes!("../assets/lantern_logo_256.png")[..],
+                ),
+                (
+                    "128x128",
+                    &include_bytes!("../assets/lantern_logo_128.png")[..],
+                ),
+                (
+                    "32x32",
+                    &include_bytes!("../assets/lantern_logo_32.png")[..],
+                ),
             ] {
                 let dir = xdg_icons.join(format!("{size}/apps"));
                 if std::fs::create_dir_all(&dir).is_ok() {
@@ -143,6 +154,16 @@ impl NativeApp {
         new_tab_button.set_tooltip_text(Some("New Tab"));
         let search_button = gtk::Button::from_icon_name("system-search-symbolic");
         search_button.set_tooltip_text(Some("Find in Terminal"));
+        let tab_prev_button = gtk::Button::from_icon_name("go-previous-symbolic");
+        tab_prev_button.add_css_class("flat");
+        tab_prev_button.set_has_frame(false);
+        tab_prev_button.set_tooltip_text(Some("Previous Tab"));
+        tab_prev_button.set_focus_on_click(false);
+        let tab_next_button = gtk::Button::from_icon_name("go-next-symbolic");
+        tab_next_button.add_css_class("flat");
+        tab_next_button.set_has_frame(false);
+        tab_next_button.set_tooltip_text(Some("Next Tab"));
+        tab_next_button.set_focus_on_click(false);
 
         // Menu popover with gio::Menu
         let menu = gio::Menu::new();
@@ -234,9 +255,11 @@ impl NativeApp {
         // --- Hover-visible remove button CSS ---
         let css = gtk::CssProvider::new();
         css.load_from_data(
-            "vte-terminal { padding: 4px 4px 0px 4px; } \
-             listbox.navigation-sidebar row .remove-button { opacity: 0; transition: opacity 150ms; } \
+            "listbox.navigation-sidebar row .remove-button { opacity: 0; transition: opacity 150ms; } \
              listbox.navigation-sidebar row:hover .remove-button { opacity: 1; } \
+             listbox.navigation-sidebar row .sidebar-move-button { opacity: 0; transition: opacity 150ms; } \
+             listbox.navigation-sidebar row:hover .sidebar-move-button { opacity: 0.7; } \
+             listbox.navigation-sidebar row .sidebar-move-button image { -gtk-icon-size: 14px; } \
              .sidebar-active-bg { \
                background-color: alpha(@accent_bg_color, 0.12); \
                border-radius: 6px; \
@@ -244,7 +267,7 @@ impl NativeApp {
              .sidebar-accent-bar { \
                background-color: @accent_bg_color; \
                border-radius: 2px; \
-             }",
+              }",
         );
         gtk::style_context_add_provider_for_display(
             &gtk::gdk::Display::default().unwrap(),
@@ -264,16 +287,17 @@ impl NativeApp {
         content_box.set_hexpand(true);
         content_box.set_vexpand(true);
 
-        // Tab bar (adw::TabBar + adw::TabView)
-        let tab_view = adw::TabView::new();
-        tab_view.set_visible(false);
-
-        let tab_bar_widget = adw::TabBar::new();
-        tab_bar_widget.set_view(Some(&tab_view));
-        tab_bar_widget.set_autohide(false);
-        tab_bar_widget.set_expand_tabs(false);
-        tab_bar_widget.set_hexpand(true);
-        tab_bar_widget.add_css_class("inline");
+        // libpanel document tabs + page container
+        let tab_view = panel::Frame::new();
+        tab_view.set_hexpand(true);
+        tab_view.set_vexpand(false);
+        let tab_header = panel::FrameTabBar::new();
+        tab_header.set_autohide(false);
+        tab_header.set_expand_tabs(false);
+        tab_header.add_css_class("inline");
+        tab_header.add_prefix(-100, &tab_prev_button);
+        tab_header.add_suffix(100, &tab_next_button);
+        tab_view.set_header(Some(&tab_header));
 
         let terminal_layout_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
         terminal_layout_box.set_hexpand(true);
@@ -323,14 +347,17 @@ impl NativeApp {
         let status_label = gtk::Label::new(Some("Starting native shell..."));
         status_label.set_xalign(0.0);
         status_label.set_hexpand(true);
+        status_label.set_single_line_mode(true);
+        status_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        status_label.set_width_chars(1);
+        status_label.set_max_width_chars(1);
         status_label.add_css_class("dim-label");
         status_box.append(&status_label);
 
-        content_box.append(&tab_bar_widget);
         content_box.append(&search_revealer);
+        content_box.append(&tab_view);
         content_box.append(&terminal_layout_box);
         content_box.append(&empty_label);
-        content_box.append(&tab_view);
         content_box.append(&surface_parking_box);
         content_box.append(&status_box);
         split.set_end_child(Some(&content_box));
@@ -350,8 +377,9 @@ impl NativeApp {
             new_tab_button,
             search_button,
             menu_button,
+            tab_prev_button,
+            tab_next_button,
             tab_view,
-            tab_bar_widget,
             terminal_layout_box,
             surface_parking_box,
             search_revealer,
@@ -381,7 +409,7 @@ impl NativeApp {
             process_refresh_source_id: RefCell::new(None),
             layout_persist_source_id: RefCell::new(None),
             session_command_running: RefCell::new(HashMap::new()),
-            repo_split_state: RefCell::new(repo_split_state),
+            tab_split_state: RefCell::new(tab_split_state),
             closing_session_ids: RefCell::new(HashSet::new()),
             rebuilding_tabs: Cell::new(false),
             paste_in_progress: Cell::new(false),
@@ -524,6 +552,22 @@ impl NativeApp {
         });
 
         let weak_self = Rc::downgrade(self);
+        self.tab_prev_button.connect_clicked(move |_| {
+            let Some(native_app) = weak_self.upgrade() else {
+                return;
+            };
+            native_app.select_relative_tab(-1);
+        });
+
+        let weak_self = Rc::downgrade(self);
+        self.tab_next_button.connect_clicked(move |_| {
+            let Some(native_app) = weak_self.upgrade() else {
+                return;
+            };
+            native_app.select_relative_tab(1);
+        });
+
+        let weak_self = Rc::downgrade(self);
         self.action_remove_repo.connect_activate(move |_, _| {
             if let Some(native_app) = weak_self.upgrade() {
                 native_app.remove_active_repo();
@@ -537,19 +581,19 @@ impl NativeApp {
             }
         });
 
-        // --- TabView signals ---
+        // --- libpanel tab signals ---
         let weak_self = Rc::downgrade(self);
-        self.tab_view.connect_selected_page_notify(move |tab_view| {
+        self.tab_view.connect_visible_child_notify(move |tab_view| {
             let Some(native_app) = weak_self.upgrade() else {
                 return;
             };
             if native_app.rebuilding_tabs.get() {
                 return;
             }
-            let Some(page) = tab_view.selected_page() else {
+            let Some(page) = tab_view.visible_child() else {
                 return;
             };
-            let Some(session_id) = session_id_for_tab_page(&page) else {
+            let Some(tab_id) = tab_id_for_tab_page(&page) else {
                 return;
             };
             let Some(repo_id) = native_app
@@ -560,67 +604,41 @@ impl NativeApp {
             else {
                 return;
             };
-            native_app.select_session(repo_id.as_str(), session_id.as_str());
+            native_app.select_tab(repo_id.as_str(), tab_id.as_str());
         });
 
         let weak_self = Rc::downgrade(self);
-        self.tab_view.connect_close_page(move |tab_view, page| {
-            let Some(native_app) = weak_self.upgrade() else {
-                tab_view.close_page_finish(page, true);
-                return gtk::glib::Propagation::Stop;
-            };
-            if native_app.rebuilding_tabs.get() {
-                tab_view.close_page_finish(page, true);
-                return gtk::glib::Propagation::Stop;
-            }
-            let session_id = session_id_for_tab_page(page);
-            let repo_id = native_app
-                .workspace
-                .borrow()
-                .active_repo()
-                .map(|repo| repo.repo.id.clone());
-            // Deny the TabView close — close_tab handles removal via rebuild_tabs
-            tab_view.close_page_finish(page, false);
-            if let (Some(repo_id), Some(session_id)) = (repo_id, session_id) {
-                native_app.close_tab(repo_id.as_str(), session_id.as_str());
-            }
-            gtk::glib::Propagation::Stop
-        });
-
-        let weak_self = Rc::downgrade(self);
-        self.tab_view.connect_page_reordered(move |tab_view, _page, _position| {
+        self.tab_view.connect_page_closed(move |_tab_view, page| {
             let Some(native_app) = weak_self.upgrade() else {
                 return;
             };
             if native_app.rebuilding_tabs.get() {
                 return;
             }
-            let mut new_order = Vec::new();
-            for i in 0..tab_view.n_pages() {
-                let page = tab_view.nth_page(i);
-                if let Some(session_id) = session_id_for_tab_page(&page) {
-                    new_order.push(session_id);
-                }
-            }
-            let repo_id = native_app
+            let Some(repo_id) = native_app
                 .workspace
                 .borrow()
                 .active_repo()
-                .map(|repo| repo.repo.id.clone());
-            if let Some(repo_id) = repo_id {
-                if let Err(error) =
-                    db::reorder_sessions(&native_app.db, repo_id.as_str(), &new_order)
-                {
-                    native_app
-                        .status_label
-                        .set_text(format!("Failed to reorder tabs: {error}").as_str());
-                    return;
-                }
-                native_app
-                    .workspace
-                    .borrow_mut()
-                    .reorder_sessions(repo_id.as_str(), &new_order);
+                .map(|repo| repo.repo.id.clone())
+            else {
+                return;
+            };
+            let Some(tab_id) = tab_id_for_tab_page(page) else {
+                return;
+            };
+            native_app.finalize_closed_tab(repo_id.as_str(), tab_id.as_str(), false);
+        });
+
+        let pages = self.tab_view.pages();
+        let weak_self = Rc::downgrade(self);
+        pages.connect_items_changed(move |_, _, _, _| {
+            let Some(native_app) = weak_self.upgrade() else {
+                return;
+            };
+            if native_app.rebuilding_tabs.get() {
+                return;
             }
+            native_app.persist_frame_tab_order();
         });
 
         // --- Sidebar row activation ---
@@ -733,6 +751,7 @@ impl NativeApp {
                 native_app.workspace.borrow_mut().layout.sidebar_width = split.position();
                 native_app.schedule_layout_persist();
             }
+            native_app.schedule_visible_terminal_size_syncs();
         });
 
         let key_controller = gtk::EventControllerKey::new();
@@ -1074,36 +1093,35 @@ impl NativeApp {
             });
             header_box.append(&collapse_button);
 
-            header_row.set_child(Some(&header_box));
-
-            // Drag source: carry group_id as string
-            let drag_source = gtk::DragSource::new();
-            drag_source.set_actions(gdk::DragAction::MOVE);
-            let drag_group_id = group.group_id.clone();
-            drag_source.connect_prepare(move |_source, _x, _y| {
-                Some(gdk::ContentProvider::for_value(
-                    &drag_group_id.to_value(),
-                ))
-            });
-            header_row.add_controller(drag_source);
-
-            // Drop target: accept group_id strings and reorder
-            let drop_target =
-                gtk::DropTarget::new(gtk::glib::Type::STRING, gdk::DragAction::MOVE);
+            let move_up_button = gtk::Button::from_icon_name("go-up-symbolic");
+            move_up_button.add_css_class("flat");
+            move_up_button.add_css_class("sidebar-move-button");
+            move_up_button.set_tooltip_text(Some("Move Group Up"));
             let weak_self = Rc::downgrade(self);
-            let target_group_id = group.group_id.clone();
-            drop_target.connect_drop(move |_target, value, _x, _y| {
-                let Ok(source_group_id) = value.get::<String>() else {
-                    return false;
-                };
+            let group_id = group.group_id.clone();
+            move_up_button.connect_clicked(move |_| {
                 let Some(native_app) = weak_self.upgrade() else {
-                    return false;
+                    return;
                 };
-                native_app.drop_sidebar_group(&source_group_id, &target_group_id);
-                true
+                native_app.move_sidebar_group(group_id.as_str(), -1);
             });
-            header_row.add_controller(drop_target);
+            header_box.append(&move_up_button);
 
+            let move_down_button = gtk::Button::from_icon_name("go-down-symbolic");
+            move_down_button.add_css_class("flat");
+            move_down_button.add_css_class("sidebar-move-button");
+            move_down_button.set_tooltip_text(Some("Move Group Down"));
+            let weak_self = Rc::downgrade(self);
+            let group_id = group.group_id.clone();
+            move_down_button.connect_clicked(move |_| {
+                let Some(native_app) = weak_self.upgrade() else {
+                    return;
+                };
+                native_app.move_sidebar_group(group_id.as_str(), 1);
+            });
+            header_box.append(&move_down_button);
+
+            header_row.set_child(Some(&header_box));
             self.sidebar_list.append(&header_row);
 
             if !collapsed {
@@ -1169,9 +1187,7 @@ impl NativeApp {
                     let git_meta = git_info_by_repo
                         .get(repo.repo.id.as_str())
                         .map(sidebar_git_meta);
-                    let has_meta = git_meta
-                        .as_ref()
-                        .is_some_and(|meta| !meta.text.is_empty());
+                    let has_meta = git_meta.as_ref().is_some_and(|meta| !meta.text.is_empty());
                     if has_meta {
                         let meta = git_meta.unwrap();
                         let meta_label = if meta.use_markup {
@@ -1215,11 +1231,10 @@ impl NativeApp {
     fn rebuild_tabs(self: &Rc<Self>) {
         self.rebuilding_tabs.set(true);
         self.park_surface_views();
+        clear_box_children(&self.terminal_layout_box);
 
         let Some(active_repo) = self.workspace.borrow().active_repo().cloned() else {
-            while self.tab_view.n_pages() > 0 {
-                self.tab_view.close_page(&self.tab_view.nth_page(0));
-            }
+            self.clear_tab_view();
             self.new_tab_button.set_sensitive(false);
             self.search_button.set_sensitive(false);
             self.action_remove_repo.set_enabled(false);
@@ -1234,45 +1249,40 @@ impl NativeApp {
             self.action_settings.set_enabled(true);
             self.empty_label.set_text("No repositories configured yet.");
             self.empty_label.set_visible(true);
+            self.tab_view.set_visible(false);
             self.terminal_layout_box.set_visible(false);
             self.rebuilding_tabs.set(false);
             return;
         };
 
-        // Destructive rebuild: remove all pages, then recreate from workspace state.
-        // This is used for repo switches, repo removal, and app init where a brief
-        // flash is acceptable. For single tab add/remove, create_tab/close_tab
-        // bypass this method entirely for smooth animation.
-        while self.tab_view.n_pages() > 0 {
-            self.tab_view.close_page(&self.tab_view.nth_page(0));
+        self.clear_tab_view();
+
+        for tab in &active_repo.tabs {
+            let page = self.build_tab_panel(tab.tab.id.as_str(), tab.tab.title.as_str());
+            self.tab_view.add(&page);
         }
 
-        for session in &active_repo.sessions {
-            let wrapper = gtk::Box::new(gtk::Orientation::Vertical, 0);
-            wrapper.set_hexpand(true);
-            wrapper.set_vexpand(true);
-            wrapper.set_widget_name(&session.id);
-            let page = self.tab_view.append(&wrapper);
-            page.set_title(&session.title);
-        }
-
-        // Select the active page
-        if let Some(active_session_id) = active_repo.active_session_id.as_deref() {
-            if let Some(page) = find_tab_page_for_session(&self.tab_view, active_session_id) {
-                self.tab_view.set_selected_page(&page);
+        if let Some(active_tab_id) = active_repo.active_tab_id.as_deref() {
+            if let Some(page) = find_tab_page_for_tab(&self.tab_view, active_tab_id) {
+                self.tab_view.set_visible_child(&page);
             }
         }
 
         self.update_action_sensitivity();
 
-        if active_repo.sessions.is_empty() {
+        if active_repo.tabs.is_empty() {
             self.empty_label
                 .set_text("No open tabs. Press Ctrl+Shift+T to open a new terminal.");
             self.empty_label.set_visible(true);
+            self.tab_view.set_visible(false);
             self.terminal_layout_box.set_visible(false);
         } else {
             self.empty_label.set_visible(false);
+            self.tab_view.set_visible(true);
             self.terminal_layout_box.set_visible(true);
+            if let Some(active_tab_id) = active_repo.active_tab_id.as_deref() {
+                self.rebuild_tab_layout(active_repo.repo.id.as_str(), active_tab_id);
+            }
         }
 
         self.rebuilding_tabs.set(false);
@@ -1287,42 +1297,60 @@ impl NativeApp {
         self.schedule_layout_persist();
     }
 
-    fn select_session(self: &Rc<Self>, repo_id: &str, session_id: &str) {
-        let previous_active_session_id = self
+    fn select_tab(self: &Rc<Self>, repo_id: &str, tab_id: &str) {
+        let previous_active_tab_id = self
             .workspace
             .borrow()
             .repos
             .iter()
             .find(|repo| repo.repo.id == repo_id)
-            .and_then(|repo| repo.active_session_id.clone());
+            .and_then(|repo| repo.active_tab_id.clone());
 
-        if previous_active_session_id.as_deref() == Some(session_id) {
+        if previous_active_tab_id.as_deref() == Some(tab_id) {
+            return;
+        }
+
+        self.workspace.borrow_mut().set_active_tab(repo_id, tab_id);
+        if let Err(error) = db::set_active_tab(&self.db, repo_id, tab_id) {
+            self.status_label
+                .set_text(format!("Failed to persist active tab: {error}").as_str());
+        }
+        self.select_tab_page_for_tab(tab_id);
+        self.rebuild_tab_layout(repo_id, tab_id);
+        self.update_action_sensitivity();
+        self.show_active_terminal();
+    }
+
+    fn select_session(self: &Rc<Self>, repo_id: &str, tab_id: &str, session_id: &str) {
+        if matches!(
+            self.active_selection_ids().as_ref(),
+            Some((active_repo_id, active_tab_id, active_session_id))
+                if active_repo_id == repo_id && active_tab_id == tab_id && active_session_id == session_id
+        ) {
             return;
         }
 
         self.workspace
             .borrow_mut()
-            .set_active_session(repo_id, session_id);
-        self.sync_visible_sessions_after_selection(
-            repo_id,
-            previous_active_session_id.as_deref(),
-            session_id,
-        );
-        if let Err(error) = db::set_active_tab(&self.db, repo_id, session_id) {
+            .set_active_session(repo_id, tab_id, session_id);
+        if let Err(error) = db::set_active_tab(&self.db, repo_id, tab_id) {
             self.status_label
                 .set_text(format!("Failed to persist active tab: {error}").as_str());
         }
-        // Sync TabView selection without triggering handler
-        self.select_tab_page_for_session(session_id);
+        if let Err(error) = db::set_active_session(&self.db, tab_id, session_id) {
+            self.status_label
+                .set_text(format!("Failed to persist active pane: {error}").as_str());
+        }
+        self.select_tab_page_for_tab(tab_id);
         self.update_action_sensitivity();
         self.show_active_terminal();
     }
 
-    fn select_tab_page_for_session(&self, session_id: &str) {
+    fn select_tab_page_for_tab(&self, tab_id: &str) {
         let was_rebuilding = self.rebuilding_tabs.get();
         self.rebuilding_tabs.set(true);
-        if let Some(page) = find_tab_page_for_session(&self.tab_view, session_id) {
-            self.tab_view.set_selected_page(&page);
+        if let Some(page) = find_tab_page_for_tab(&self.tab_view, tab_id) {
+            self.tab_view.set_visible_child(&page);
         }
         self.rebuilding_tabs.set(was_rebuilding);
     }
@@ -1331,6 +1359,8 @@ impl NativeApp {
         let Some(active_repo) = self.workspace.borrow().active_repo().cloned() else {
             self.new_tab_button.set_sensitive(false);
             self.search_button.set_sensitive(false);
+            self.tab_prev_button.set_sensitive(false);
+            self.tab_next_button.set_sensitive(false);
             self.action_remove_repo.set_enabled(false);
             self.action_close_tab.set_enabled(false);
             self.action_move_tab_left.set_enabled(false);
@@ -1343,40 +1373,208 @@ impl NativeApp {
             return;
         };
 
-        let has_session = active_repo.active_session_id.is_some();
-        let active_session_index =
-            active_repo
-                .active_session_id
-                .as_deref()
-                .and_then(|session_id| {
-                    active_repo
-                        .sessions
-                        .iter()
-                        .position(|session| session.id == session_id)
-                });
-        let split_count = self
-            .split_state_for_repo(
-                active_repo.repo.id.as_str(),
-                active_repo.active_session_id.as_deref(),
-            )
-            .visible_session_ids
-            .len();
+        let active_tab = active_repo.active_tab();
+        let has_session = active_tab
+            .and_then(|tab| tab.tab.active_session_id.as_ref())
+            .is_some();
+        let active_tab_index = active_repo
+            .active_tab_id
+            .as_deref()
+            .and_then(|tab_id| active_repo.tabs.iter().position(|tab| tab.tab.id == tab_id));
+        let split_count = active_tab
+            .map(|tab| {
+                self.split_state_for_tab(tab.tab.id.as_str(), tab.tab.active_session_id.as_deref())
+                    .visible_session_ids
+                    .len()
+            })
+            .unwrap_or(0);
 
         self.new_tab_button.set_sensitive(true);
         self.search_button.set_sensitive(has_session);
+        self.tab_prev_button
+            .set_sensitive(matches!(active_tab_index, Some(index) if index > 0));
+        self.tab_next_button.set_sensitive(matches!(
+            active_tab_index,
+            Some(index) if index + 1 < active_repo.tabs.len()
+        ));
         self.action_remove_repo.set_enabled(true);
-        self.action_close_tab.set_enabled(has_session);
+        self.action_close_tab.set_enabled(active_tab.is_some());
         self.action_move_tab_left
-            .set_enabled(matches!(active_session_index, Some(index) if index > 0));
+            .set_enabled(matches!(active_tab_index, Some(index) if index > 0));
         self.action_move_tab_right.set_enabled(matches!(
-            active_session_index,
-            Some(index) if index + 1 < active_repo.sessions.len()
+            active_tab_index,
+            Some(index) if index + 1 < active_repo.tabs.len()
         ));
         self.action_split_right.set_enabled(has_session);
         self.action_split_down.set_enabled(has_session);
         self.action_close_split.set_enabled(split_count > 1);
         self.action_next_pane.set_enabled(split_count > 1);
         self.action_flip_split.set_enabled(split_count > 1);
+    }
+
+    fn next_tab_title(&self, repo_id: &str) -> Result<String, LanternError> {
+        let workspace = self.workspace.borrow();
+        let repo = workspace
+            .repos
+            .iter()
+            .find(|repo| repo.repo.id == repo_id)
+            .ok_or_else(|| LanternError::RepoNotFound(repo_id.to_string()))?;
+        Ok(next_tab_title(&repo.tabs))
+    }
+
+    fn next_session_title_for_tab(&self, tab_id: &str) -> Result<String, LanternError> {
+        let workspace = self.workspace.borrow();
+        let tab = workspace
+            .repos
+            .iter()
+            .find_map(|repo| repo.tab(tab_id))
+            .ok_or_else(|| LanternError::TabNotFound(tab_id.to_string()))?;
+        Ok(next_session_title(&tab.sessions))
+    }
+
+    fn build_tab_panel(&self, tab_id: &str, title: &str) -> panel::Widget {
+        let page_content = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        page_content.set_widget_name(tab_id);
+
+        let page = panel::Widget::new();
+        page.set_id(tab_id);
+        page.set_title(Some(title));
+        page.set_tooltip(Some(title));
+        page.set_kind(Some(panel::WIDGET_KIND_DOCUMENT));
+        page.set_reorderable(true);
+        page.set_child(Some(&page_content));
+        page
+    }
+
+    fn clear_tab_view(&self) {
+        while let Some(page) = self.tab_view.page(0) {
+            self.tab_view.remove(&page);
+        }
+    }
+
+    fn frame_page_ids(&self) -> Vec<String> {
+        let mut page_ids = Vec::new();
+        for index in 0..self.tab_view.n_pages() {
+            if let Some(page) = self.tab_view.page(index) {
+                let id = page.id();
+                if !id.is_empty() {
+                    page_ids.push(id.to_string());
+                }
+            }
+        }
+        page_ids
+    }
+
+    fn visible_tab_id(&self) -> Option<String> {
+        let page = self.tab_view.visible_child()?;
+        let tab_id = page.id();
+        if tab_id.is_empty() {
+            None
+        } else {
+            Some(tab_id.to_string())
+        }
+    }
+
+    fn persist_frame_tab_order(&self) {
+        let Some(active_repo) = self.workspace.borrow().active_repo().cloned() else {
+            return;
+        };
+        let new_order = self.frame_page_ids();
+        let current_order = active_repo
+            .tabs
+            .iter()
+            .map(|tab| tab.tab.id.clone())
+            .collect::<Vec<_>>();
+        if new_order == current_order || new_order.len() != current_order.len() {
+            return;
+        }
+
+        if let Err(error) = db::reorder_tabs(&self.db, active_repo.repo.id.as_str(), &new_order) {
+            self.status_label
+                .set_text(format!("Failed to reorder tabs: {error}").as_str());
+            return;
+        }
+
+        self.workspace
+            .borrow_mut()
+            .reorder_tabs(active_repo.repo.id.as_str(), &new_order);
+        self.update_action_sensitivity();
+    }
+
+    fn finalize_closed_tab(self: &Rc<Self>, repo_id: &str, tab_id: &str, remove_panel: bool) {
+        let tab = self
+            .workspace
+            .borrow()
+            .repos
+            .iter()
+            .find(|repo| repo.repo.id == repo_id)
+            .and_then(|repo| repo.tab(tab_id))
+            .cloned();
+        let Some(tab) = tab else {
+            return;
+        };
+
+        if remove_panel {
+            if let Some(page) = find_tab_page_for_tab(&self.tab_view, tab_id) {
+                self.tab_view.remove(&page);
+            }
+        }
+
+        if let Err(error) = db::close_tab(&self.db, tab_id) {
+            self.status_label
+                .set_text(format!("Failed to close terminal tab: {error}").as_str());
+            return;
+        }
+
+        self.park_tab_surface_views(&tab);
+        for session in &tab.sessions {
+            self.closing_session_ids
+                .borrow_mut()
+                .insert(session.id.clone());
+            self.host.borrow_mut().remove_surface(session.id.as_str());
+            self.clear_session_runtime_state(session.id.as_str());
+            self.closing_session_ids
+                .borrow_mut()
+                .remove(session.id.as_str());
+        }
+
+        self.tab_split_state.borrow_mut().remove(tab_id);
+        clear_box_children(&self.terminal_layout_box);
+
+        let next_visible_tab_id = self.visible_tab_id();
+        {
+            let mut workspace = self.workspace.borrow_mut();
+            workspace.close_tab(repo_id, tab_id);
+            if let Some(next_visible_tab_id) = next_visible_tab_id.as_deref() {
+                workspace.set_active_tab(repo_id, next_visible_tab_id);
+            }
+        }
+
+        if let Some(next_tab_id) = next_visible_tab_id {
+            if let Err(error) = db::set_active_tab(&self.db, repo_id, next_tab_id.as_str()) {
+                self.status_label.set_text(
+                    format!("Closed tab but failed to persist selection: {error}").as_str(),
+                );
+            }
+        }
+
+        let tab_count = self
+            .workspace
+            .borrow()
+            .active_repo()
+            .map(|repo| repo.tabs.len())
+            .unwrap_or(0);
+        if tab_count == 0 {
+            self.empty_label
+                .set_text("No open tabs. Press Ctrl+Shift+T to open a new terminal.");
+            self.empty_label.set_visible(true);
+            self.tab_view.set_visible(false);
+            self.terminal_layout_box.set_visible(false);
+            clear_box_children(&self.terminal_layout_box);
+        }
+
+        self.update_action_sensitivity();
+        self.show_active_terminal();
     }
 
     fn prompt_add_repo(self: &Rc<Self>) {
@@ -1536,7 +1734,7 @@ impl NativeApp {
         }
 
         for repo_id in &added_repo_ids {
-            if let Err(error) = self.create_session_for_repo(repo_id.as_str()) {
+            if let Err(error) = self.create_tab_for_repo(repo_id.as_str()) {
                 self.status_label
                     .set_text(format!("Failed to create initial terminal tab: {error}").as_str());
                 return;
@@ -1580,9 +1778,9 @@ impl NativeApp {
             Ok(Some(id)) => id,
             _ => {
                 // No existing group — check if any sibling repo exists ungrouped
-                let sibling = sibling_paths.iter().find_map(|path| {
-                    db::find_repo_id_by_path(&self.db, path).ok().flatten()
-                });
+                let sibling = sibling_paths
+                    .iter()
+                    .find_map(|path| db::find_repo_id_by_path(&self.db, path).ok().flatten());
                 let Some(sibling_id) = sibling else {
                     return repo;
                 };
@@ -1597,9 +1795,9 @@ impl NativeApp {
                     return repo;
                 }
                 // Update the sibling's in-memory state in the workspace
-                if let Ok(Some(updated_sibling)) = db::list_repos(&self.db).map(|repos| {
-                    repos.into_iter().find(|r| r.id == sibling_id)
-                }) {
+                if let Ok(Some(updated_sibling)) = db::list_repos(&self.db)
+                    .map(|repos| repos.into_iter().find(|r| r.id == sibling_id))
+                {
                     self.workspace.borrow_mut().update_repo(updated_sibling);
                 }
                 new_group_id
@@ -1655,14 +1853,16 @@ impl NativeApp {
         }
         let _ = db::hide_repo_path(&self.db, repo.repo.path.as_str());
 
-        for session in &repo.sessions {
-            self.host.borrow_mut().remove_surface(session.id.as_str());
-            self.clear_session_runtime_state(session.id.as_str());
+        for tab in &repo.tabs {
+            self.tab_split_state
+                .borrow_mut()
+                .remove(tab.tab.id.as_str());
+            for session in &tab.sessions {
+                self.host.borrow_mut().remove_surface(session.id.as_str());
+                self.clear_session_runtime_state(session.id.as_str());
+            }
         }
         self.git_info_by_repo
-            .borrow_mut()
-            .remove(repo.repo.id.as_str());
-        self.repo_split_state
             .borrow_mut()
             .remove(repo.repo.id.as_str());
         self.workspace
@@ -1679,44 +1879,44 @@ impl NativeApp {
         let Some(active_repo) = self.workspace.borrow().active_repo().cloned() else {
             return;
         };
-        if active_repo.sessions.is_empty() {
+        if active_repo.tabs.is_empty() {
             return;
         }
 
-        let Some(current_index) = active_repo.sessions.iter().position(|session| {
-            Some(session.id.as_str()) == active_repo.active_session_id.as_deref()
-        }) else {
+        let Some(current_index) = active_repo
+            .active_tab_id
+            .as_deref()
+            .and_then(|tab_id| active_repo.tabs.iter().position(|tab| tab.tab.id == tab_id))
+        else {
             return;
         };
-        let next_index = wrapped_index(active_repo.sessions.len(), current_index, direction);
-        let next_session_id = active_repo.sessions[next_index].id.clone();
-        self.select_session(active_repo.repo.id.as_str(), next_session_id.as_str());
+        let next_index = wrapped_index(active_repo.tabs.len(), current_index, direction);
+        let next_tab_id = active_repo.tabs[next_index].tab.id.clone();
+        self.select_tab(active_repo.repo.id.as_str(), next_tab_id.as_str());
     }
 
     fn move_active_tab(self: &Rc<Self>, direction: isize) {
         let Some(active_repo) = self.workspace.borrow().active_repo().cloned() else {
             return;
         };
-        let Some(active_session_id) = active_repo.active_session_id.as_deref() else {
+        let Some(active_tab_id) = active_repo.active_tab_id.as_deref() else {
             return;
         };
 
-        let session_ids = active_repo
-            .sessions
+        let tab_ids = active_repo
+            .tabs
             .iter()
-            .map(|session| session.id.clone())
+            .map(|tab| tab.tab.id.clone())
             .collect::<Vec<_>>();
-        let Some(reordered_session_ids) =
-            reordered_session_ids_for_tab_move(&session_ids, active_session_id, direction)
+        let Some(reordered_tab_ids) =
+            reordered_session_ids_for_tab_move(&tab_ids, active_tab_id, direction)
         else {
             return;
         };
 
-        if let Err(error) = db::reorder_sessions(
-            &self.db,
-            active_repo.repo.id.as_str(),
-            &reordered_session_ids,
-        ) {
+        if let Err(error) =
+            db::reorder_tabs(&self.db, active_repo.repo.id.as_str(), &reordered_tab_ids)
+        {
             self.status_label
                 .set_text(format!("Failed to reorder tabs: {error}").as_str());
             return;
@@ -1724,25 +1924,19 @@ impl NativeApp {
 
         self.workspace
             .borrow_mut()
-            .reorder_sessions(active_repo.repo.id.as_str(), &reordered_session_ids);
-        // Reorder the page in-place instead of rebuilding all tabs
-        if let Some(page) = find_tab_page_for_session(&self.tab_view, active_session_id) {
-            let new_position = reordered_session_ids
-                .iter()
-                .position(|id| id == active_session_id)
-                .unwrap_or(0) as i32;
-            self.tab_view.reorder_page(&page, new_position);
-        }
+            .reorder_tabs(active_repo.repo.id.as_str(), &reordered_tab_ids);
+        self.rebuild_tabs();
+        self.select_tab_page_for_tab(active_tab_id);
         self.update_action_sensitivity();
     }
 
     fn move_active_split(self: &Rc<Self>, direction: isize) {
-        let Some((repo_id, active_session_id)) = self.active_tab_ids() else {
+        let Some((repo_id, tab_id, active_session_id)) = self.active_selection_ids() else {
             return;
         };
 
         let split_state =
-            self.split_state_for_repo(repo_id.as_str(), Some(active_session_id.as_str()));
+            self.split_state_for_tab(tab_id.as_str(), Some(active_session_id.as_str()));
         let Some(reordered_visible_session_ids) = reordered_visible_session_ids_for_pane_move(
             &split_state.visible_session_ids,
             active_session_id.as_str(),
@@ -1752,7 +1946,7 @@ impl NativeApp {
         };
 
         self.set_split_state(
-            repo_id.as_str(),
+            tab_id.as_str(),
             NativeSplitState {
                 visible_session_ids: reordered_visible_session_ids,
                 orientation: split_state.orientation,
@@ -1760,6 +1954,7 @@ impl NativeApp {
             },
             Some(active_session_id.as_str()),
         );
+        self.rebuild_tab_layout(repo_id.as_str(), tab_id.as_str());
         self.show_active_terminal();
     }
 
@@ -1796,10 +1991,10 @@ impl NativeApp {
         self.schedule_layout_persist();
     }
 
-    fn drop_sidebar_group(self: &Rc<Self>, source_group_id: &str, target_group_id: &str) {
+    fn move_sidebar_group(self: &Rc<Self>, group_id: &str, direction: isize) {
         let group_order = sidebar_groups(&self.workspace.borrow().repos);
         let Some(reordered_repo_ids) =
-            reordered_repo_ids_for_group_drop(&group_order, source_group_id, target_group_id)
+            reordered_repo_ids_for_group_move(&group_order, group_id, direction)
         else {
             return;
         };
@@ -1829,6 +2024,7 @@ impl NativeApp {
             self.split.set_position(sidebar_width);
             self.workspace.borrow_mut().layout.sidebar_collapsed = false;
         }
+        self.schedule_visible_terminal_size_syncs();
         self.flush_layout_persist();
     }
 
@@ -2246,16 +2442,11 @@ impl NativeApp {
                 });
 
             for entry in &new_entries {
-                match db::add_repo_grouped(
-                    &self.db,
-                    &entry.path,
-                    Some(&group_id),
-                    entry.is_main,
-                ) {
+                match db::add_repo_grouped(&self.db, &entry.path, Some(&group_id), entry.is_main) {
                     Ok(repo) => {
                         let repo_id = repo.id.clone();
                         self.workspace.borrow_mut().add_repo(repo);
-                        let _ = self.create_session_for_repo(&repo_id);
+                        let _ = self.create_tab_for_repo(&repo_id);
                         added_any = true;
                     }
                     Err(LanternError::RepoAlreadyExists(_))
@@ -2342,7 +2533,7 @@ impl NativeApp {
     }
 
     fn active_command_running_state(&self) -> Option<bool> {
-        let (_, session_id) = self.active_tab_ids()?;
+        let (_, _, session_id) = self.active_selection_ids()?;
         self.session_command_running
             .borrow()
             .get(session_id.as_str())
@@ -2378,8 +2569,8 @@ impl NativeApp {
         }
 
         let is_active = matches!(
-            self.active_tab_ids(),
-            Some((_, active_session_id)) if active_session_id == session_id
+            self.active_selection_ids(),
+            Some((_, _, active_session_id)) if active_session_id == session_id
         );
         if is_active {
             self.clear_active_process_info();
@@ -2389,8 +2580,8 @@ impl NativeApp {
 
     fn refresh_terminal_runtime_for_session(&self, session_id: &str) {
         let is_active = matches!(
-            self.active_tab_ids(),
-            Some((_, active_session_id)) if active_session_id == session_id
+            self.active_selection_ids(),
+            Some((_, _, active_session_id)) if active_session_id == session_id
         );
         if !is_active {
             return;
@@ -2447,49 +2638,42 @@ impl NativeApp {
 
     fn paste_image_from_clipboard(self: &Rc<Self>, clipboard: &gtk::gdk::Clipboard) {
         let weak_self = Rc::downgrade(self);
-        clipboard.read_texture_async(
-            gtk::gio::Cancellable::NONE,
-            move |result| {
-                let Some(native_app) = weak_self.upgrade() else {
-                    return;
-                };
-                match result {
-                    Ok(Some(texture)) => {
-                        let filename = format!("lantern-paste-{}.png", Uuid::new_v4());
-                        let path = std::path::Path::new("/tmp").join(&filename);
-                        if let Err(err) = texture.save_to_png(&path) {
-                            eprintln!("lantern: failed to save clipboard image: {err}");
-                            native_app.paste_clipboard_into_active_terminal();
-                            return;
-                        }
-                        if let Some(surface) = native_app.active_surface() {
-                            let path_str = path.to_string_lossy();
-                            surface.terminal().feed_child(path_str.as_bytes());
-                        }
-                    }
-                    _ => {
+        clipboard.read_texture_async(gtk::gio::Cancellable::NONE, move |result| {
+            let Some(native_app) = weak_self.upgrade() else {
+                return;
+            };
+            match result {
+                Ok(Some(texture)) => {
+                    let filename = format!("lantern-paste-{}.png", Uuid::new_v4());
+                    let path = std::path::Path::new("/tmp").join(&filename);
+                    if let Err(err) = texture.save_to_png(&path) {
+                        eprintln!("lantern: failed to save clipboard image: {err}");
                         native_app.paste_clipboard_into_active_terminal();
+                        return;
+                    }
+                    if let Some(surface) = native_app.active_surface() {
+                        let path_str = path.to_string_lossy();
+                        surface.terminal().feed_child(path_str.as_bytes());
                     }
                 }
-            },
-        );
+                _ => {
+                    native_app.paste_clipboard_into_active_terminal();
+                }
+            }
+        });
     }
 
     fn prompt_rename_active_tab(self: &Rc<Self>) {
-        let Some((repo_id, session_id, current_title)) = self.active_tab_metadata() else {
+        let Some((repo_id, tab_id, current_title)) = self.active_tab_metadata() else {
             self.status_label
                 .set_text("No active terminal tab to rename.");
             return;
         };
 
-        self.prompt_rename_tab(
-            repo_id.as_str(),
-            session_id.as_str(),
-            current_title.as_str(),
-        );
+        self.prompt_rename_tab(repo_id.as_str(), tab_id.as_str(), current_title.as_str());
     }
 
-    fn prompt_rename_tab(self: &Rc<Self>, repo_id: &str, session_id: &str, current_title: &str) {
+    fn prompt_rename_tab(self: &Rc<Self>, repo_id: &str, tab_id: &str, current_title: &str) {
         let dialog = gtk::Dialog::builder()
             .title("Rename Tab")
             .transient_for(&self.window)
@@ -2509,13 +2693,13 @@ impl NativeApp {
         let weak_self = Rc::downgrade(self);
         let entry_for_response = entry.clone();
         let repo_id = repo_id.to_string();
-        let session_id = session_id.to_string();
+        let tab_id = tab_id.to_string();
         dialog.connect_response(move |dialog, response| {
             if response == gtk::ResponseType::Accept {
                 if let Some(native_app) = weak_self.upgrade() {
                     native_app.rename_active_tab(
                         repo_id.as_str(),
-                        session_id.as_str(),
+                        tab_id.as_str(),
                         entry_for_response.text().as_str(),
                     );
                 }
@@ -2527,13 +2711,13 @@ impl NativeApp {
         entry.grab_focus();
     }
 
-    fn rename_active_tab(self: &Rc<Self>, repo_id: &str, session_id: &str, raw_title: &str) {
+    fn rename_active_tab(self: &Rc<Self>, repo_id: &str, tab_id: &str, raw_title: &str) {
         let Some(title) = normalized_session_title(raw_title) else {
             self.status_label.set_text("Tab title cannot be empty.");
             return;
         };
 
-        if let Err(error) = db::rename_session(&self.db, session_id, title.as_str()) {
+        if let Err(error) = db::rename_tab(&self.db, tab_id, title.as_str()) {
             self.status_label
                 .set_text(format!("Failed to rename terminal tab: {error}").as_str());
             return;
@@ -2541,13 +2725,10 @@ impl NativeApp {
 
         self.workspace
             .borrow_mut()
-            .rename_session(repo_id, session_id, title.as_str());
-        if let Some(surface) = self.host.borrow().surface(session_id) {
-            surface.set_fallback_title(title.as_str());
-        }
-        // Update the page title in-place instead of rebuilding all tabs
-        if let Some(page) = find_tab_page_for_session(&self.tab_view, session_id) {
-            page.set_title(&title);
+            .rename_tab(repo_id, tab_id, title.as_str());
+        if let Some(page) = find_tab_page_for_tab(&self.tab_view, tab_id) {
+            page.set_title(Some(title.as_str()));
+            page.set_tooltip(Some(title.as_str()));
         }
         self.refresh_active_terminal_chrome();
     }
@@ -2563,47 +2744,17 @@ impl NativeApp {
                 .set_text("Select a repository before creating a terminal tab.");
             return;
         };
-        let previous_active_session_id = self
-            .workspace
-            .borrow()
-            .active_repo()
-            .and_then(|repo| repo.active_session_id.clone());
 
-        match self.create_session_for_repo(repo_id.as_str()) {
-            Ok(session_id) => {
-                self.sync_visible_sessions_after_selection(
-                    repo_id.as_str(),
-                    previous_active_session_id.as_deref(),
-                    session_id.as_str(),
-                );
-
-                // Add a single page inline instead of rebuilding all tabs.
-                // Keep rebuilding_tabs true through show_active_terminal to
-                // prevent signal races.
+        match self.create_tab_for_repo(repo_id.as_str()) {
+            Ok((tab_id, _session_id, title)) => {
                 self.rebuilding_tabs.set(true);
 
-                let title = self
-                    .workspace
-                    .borrow()
-                    .repos
-                    .iter()
-                    .find(|r| r.repo.id == repo_id)
-                    .and_then(|r| {
-                        r.sessions
-                            .iter()
-                            .find(|s| s.id == session_id)
-                            .map(|s| s.title.clone())
-                    })
-                    .unwrap_or_else(|| "Terminal".to_string());
-
-                let wrapper = gtk::Box::new(gtk::Orientation::Vertical, 0);
-                wrapper.set_hexpand(true);
-                wrapper.set_vexpand(true);
-                wrapper.set_widget_name(&session_id);
-                let page = self.tab_view.append(&wrapper);
-                page.set_title(&title);
-                self.tab_view.set_selected_page(&page);
+                let page = self.build_tab_panel(tab_id.as_str(), title.as_str());
+                self.tab_view.add(&page);
+                page.raise();
+                self.rebuild_tab_layout(repo_id.as_str(), tab_id.as_str());
                 self.empty_label.set_visible(false);
+                self.tab_view.set_visible(true);
                 self.terminal_layout_box.set_visible(true);
                 self.update_action_sensitivity();
                 self.show_active_terminal();
@@ -2618,111 +2769,25 @@ impl NativeApp {
     }
 
     fn close_active_tab(self: &Rc<Self>) {
-        let Some((repo_id, session_id)) = self.active_tab_ids() else {
+        let Some((repo_id, tab_id)) = self.active_repo_tab_ids() else {
             self.status_label
                 .set_text("No active terminal tab to close.");
             return;
         };
 
-        self.close_tab(repo_id.as_str(), session_id.as_str());
+        self.close_tab(repo_id.as_str(), tab_id.as_str());
     }
 
-    fn close_tab(self: &Rc<Self>, repo_id: &str, session_id: &str) {
-        let current_active_session_id = self
-            .workspace
-            .borrow()
-            .repos
-            .iter()
-            .find(|repo| repo.repo.id == repo_id)
-            .and_then(|repo| repo.active_session_id.clone());
-        let split_state = self.split_state_for_repo(repo_id, current_active_session_id.as_deref());
-
-        if let Err(error) = db::close_session(&self.db, session_id) {
-            self.status_label
-                .set_text(format!("Failed to close terminal tab: {error}").as_str());
+    fn close_tab(self: &Rc<Self>, repo_id: &str, tab_id: &str) {
+        let Some(page) = find_tab_page_for_tab(&self.tab_view, tab_id) else {
+            self.finalize_closed_tab(repo_id, tab_id, false);
             return;
-        }
-
-        self.closing_session_ids
-            .borrow_mut()
-            .insert(session_id.to_string());
-        self.host.borrow_mut().remove_surface(session_id);
-        self.clear_session_runtime_state(session_id);
-        self.closing_session_ids
-            .borrow_mut()
-            .remove(session_id);
-
-        let next_active_session_id = {
-            let mut workspace = self.workspace.borrow_mut();
-            let was_active = current_active_session_id.as_deref() == Some(session_id);
-            workspace.close_session(repo_id, session_id);
-            let next_visible_session_id = remove_visible_session(
-                &split_state.visible_session_ids,
-                session_id,
-                current_active_session_id
-                    .as_deref()
-                    .filter(|active_id| *active_id != session_id),
-            )
-            .first()
-            .cloned();
-            if was_active {
-                if let Some(next_visible_session_id) = next_visible_session_id.clone() {
-                    workspace.set_active_session(repo_id, next_visible_session_id.as_str());
-                }
-            }
-            next_visible_session_id.or_else(|| {
-                workspace
-                    .repos
-                    .iter()
-                    .find(|repo| repo.repo.id == repo_id)
-                    .and_then(|repo| repo.active_session_id.clone())
-            })
         };
-        self.remove_closed_session_from_visible_state(
-            repo_id,
-            session_id,
-            next_active_session_id.as_deref(),
-        );
 
-        if let Some(ref next_id) = next_active_session_id {
-            if let Err(error) = db::set_active_tab(&self.db, repo_id, next_id.as_str()) {
-                self.status_label.set_text(
-                    format!("Closed tab but failed to persist selection: {error}").as_str(),
-                );
-            }
-        }
-
-        // Remove just the closed tab's page inline instead of rebuilding all tabs.
-        // Keep rebuilding_tabs true through show_active_terminal to prevent signal races.
         self.rebuilding_tabs.set(true);
-        self.park_surface_views();
-
-        if let Some(page) = find_tab_page_for_session(&self.tab_view, session_id) {
-            self.tab_view.close_page(&page);
-        }
-
-        if let Some(ref next_id) = next_active_session_id {
-            if let Some(page) = find_tab_page_for_session(&self.tab_view, next_id.as_str()) {
-                self.tab_view.set_selected_page(&page);
-            }
-        }
-
-        let session_count = self
-            .workspace
-            .borrow()
-            .active_repo()
-            .map(|r| r.sessions.len())
-            .unwrap_or(0);
-        if session_count == 0 {
-            self.empty_label
-                .set_text("No open tabs. Press Ctrl+Shift+T to open a new terminal.");
-            self.empty_label.set_visible(true);
-            self.terminal_layout_box.set_visible(false);
-        }
-        self.update_action_sensitivity();
-        self.show_active_terminal();
-
+        page.close();
         self.rebuilding_tabs.set(false);
+        self.finalize_closed_tab(repo_id, tab_id, false);
     }
 
     fn split_right(self: &Rc<Self>) {
@@ -2734,13 +2799,13 @@ impl NativeApp {
     }
 
     fn focus_other_split(self: &Rc<Self>) {
-        let Some((repo_id, active_session_id)) = self.active_tab_ids() else {
+        let Some((repo_id, tab_id, active_session_id)) = self.active_selection_ids() else {
             self.status_label.set_text("No active split to focus.");
             return;
         };
 
         let split_state =
-            self.split_state_for_repo(repo_id.as_str(), Some(active_session_id.as_str()));
+            self.split_state_for_tab(tab_id.as_str(), Some(active_session_id.as_str()));
         let Some(next_session_id) =
             next_visible_session_id(&split_state.visible_session_ids, active_session_id.as_str())
         else {
@@ -2748,17 +2813,17 @@ impl NativeApp {
             return;
         };
 
-        self.select_session(repo_id.as_str(), next_session_id.as_str());
+        self.select_session(repo_id.as_str(), tab_id.as_str(), next_session_id.as_str());
     }
 
     fn focus_split_by_index(self: &Rc<Self>, index: usize) {
-        let Some((repo_id, active_session_id)) = self.active_tab_ids() else {
+        let Some((repo_id, tab_id, active_session_id)) = self.active_selection_ids() else {
             self.status_label.set_text("No active split to focus.");
             return;
         };
 
         let split_state =
-            self.split_state_for_repo(repo_id.as_str(), Some(active_session_id.as_str()));
+            self.split_state_for_tab(tab_id.as_str(), Some(active_session_id.as_str()));
         let Some(session_id) = nth_visible_session_id(&split_state.visible_session_ids, index)
         else {
             self.status_label
@@ -2766,24 +2831,24 @@ impl NativeApp {
             return;
         };
 
-        self.select_session(repo_id.as_str(), session_id.as_str());
+        self.select_session(repo_id.as_str(), tab_id.as_str(), session_id.as_str());
     }
 
     fn toggle_split_orientation(self: &Rc<Self>) {
-        let Some((repo_id, active_session_id)) = self.active_tab_ids() else {
+        let Some((repo_id, tab_id, active_session_id)) = self.active_selection_ids() else {
             self.status_label.set_text("No active split to flip.");
             return;
         };
 
         let split_state =
-            self.split_state_for_repo(repo_id.as_str(), Some(active_session_id.as_str()));
+            self.split_state_for_tab(tab_id.as_str(), Some(active_session_id.as_str()));
         if split_state.visible_session_ids.len() <= 1 {
             self.status_label.set_text("No split to flip.");
             return;
         }
 
         self.set_split_state(
-            repo_id.as_str(),
+            tab_id.as_str(),
             NativeSplitState {
                 visible_session_ids: split_state.visible_session_ids,
                 orientation: toggled_split_orientation(split_state.orientation),
@@ -2791,18 +2856,18 @@ impl NativeApp {
             },
             Some(active_session_id.as_str()),
         );
-        self.rebuild_tabs();
+        self.rebuild_tab_layout(repo_id.as_str(), tab_id.as_str());
         self.show_active_terminal();
     }
 
     fn open_split(self: &Rc<Self>, orientation: NativeSplitOrientation) {
-        let Some((repo_id, active_session_id)) = self.active_tab_ids() else {
+        let Some((repo_id, tab_id, active_session_id)) = self.active_selection_ids() else {
             self.status_label.set_text("No active terminal to split.");
             return;
         };
 
         let split_state =
-            self.split_state_for_repo(repo_id.as_str(), Some(active_session_id.as_str()));
+            self.split_state_for_tab(tab_id.as_str(), Some(active_session_id.as_str()));
         if split_state.visible_session_ids.len() >= MAX_VISIBLE_SPLITS {
             self.status_label.set_text(
                 format!("Only {MAX_VISIBLE_SPLITS} panes are supported right now.").as_str(),
@@ -2810,10 +2875,10 @@ impl NativeApp {
             return;
         }
 
-        match self.create_session_for_repo(repo_id.as_str()) {
+        match self.create_session_for_tab(tab_id.as_str()) {
             Ok(session_id) => {
                 self.set_split_state(
-                    repo_id.as_str(),
+                    tab_id.as_str(),
                     NativeSplitState {
                         visible_session_ids: append_split_session(
                             &split_state.visible_session_ids,
@@ -2824,7 +2889,7 @@ impl NativeApp {
                     },
                     Some(session_id.as_str()),
                 );
-                self.rebuild_tabs();
+                self.rebuild_tab_layout(repo_id.as_str(), tab_id.as_str());
                 self.show_active_terminal();
             }
             Err(error) => {
@@ -2835,17 +2900,40 @@ impl NativeApp {
     }
 
     fn close_active_split(self: &Rc<Self>) {
-        let Some((repo_id, active_session_id)) = self.active_tab_ids() else {
+        let Some((repo_id, tab_id, active_session_id)) = self.active_selection_ids() else {
             self.status_label.set_text("No active split to close.");
             return;
         };
 
         let split_state =
-            self.split_state_for_repo(repo_id.as_str(), Some(active_session_id.as_str()));
+            self.split_state_for_tab(tab_id.as_str(), Some(active_session_id.as_str()));
         if split_state.visible_session_ids.len() <= 1 {
             self.status_label.set_text("No split to close.");
             return;
         }
+
+        if let Err(error) = db::close_session(&self.db, active_session_id.as_str()) {
+            self.status_label
+                .set_text(format!("Failed to close split: {error}").as_str());
+            return;
+        }
+
+        self.closing_session_ids
+            .borrow_mut()
+            .insert(active_session_id.clone());
+        self.host
+            .borrow_mut()
+            .remove_surface(active_session_id.as_str());
+        self.clear_session_runtime_state(active_session_id.as_str());
+        self.closing_session_ids
+            .borrow_mut()
+            .remove(active_session_id.as_str());
+
+        self.workspace.borrow_mut().close_session(
+            repo_id.as_str(),
+            tab_id.as_str(),
+            active_session_id.as_str(),
+        );
 
         let remaining_sessions = remove_visible_session(
             &split_state.visible_session_ids,
@@ -2853,15 +2941,17 @@ impl NativeApp {
             None,
         );
         let Some(next_active_session_id) = remaining_sessions.first().cloned() else {
-            self.status_label.set_text("No split to focus.");
+            self.close_tab(repo_id.as_str(), tab_id.as_str());
             return;
         };
 
-        self.workspace
-            .borrow_mut()
-            .set_active_session(repo_id.as_str(), next_active_session_id.as_str());
-        self.set_split_state(
+        self.workspace.borrow_mut().set_active_session(
             repo_id.as_str(),
+            tab_id.as_str(),
+            next_active_session_id.as_str(),
+        );
+        self.set_split_state(
+            tab_id.as_str(),
             NativeSplitState {
                 visible_session_ids: remaining_sessions,
                 orientation: split_state.orientation,
@@ -2870,13 +2960,14 @@ impl NativeApp {
             Some(next_active_session_id.as_str()),
         );
         if let Err(error) =
-            db::set_active_tab(&self.db, repo_id.as_str(), next_active_session_id.as_str())
+            db::set_active_session(&self.db, tab_id.as_str(), next_active_session_id.as_str())
         {
             self.status_label
                 .set_text(format!("Failed to persist active split: {error}").as_str());
         }
 
-        self.rebuild_tabs();
+        self.rebuild_tab_layout(repo_id.as_str(), tab_id.as_str());
+        self.update_action_sensitivity();
         self.show_active_terminal();
     }
 
@@ -2884,31 +2975,35 @@ impl NativeApp {
         let active = {
             let workspace = self.workspace.borrow();
             match workspace.active_repo().cloned() {
-                Some(repo) => match repo.active_session_id.clone() {
-                    Some(session_id) => Some((repo, Some(session_id))),
+                Some(repo) => match repo.active_tab().cloned() {
+                    Some(tab) => Some((repo, Some(tab))),
                     None => Some((repo, None)),
                 },
                 None => None,
             }
         };
 
-        let Some((repo, session)) = active else {
+        let Some((repo, tab)) = active else {
             self.close_search();
             self.clear_active_process_info();
+            clear_box_children(&self.terminal_layout_box);
             self.empty_label.set_text("No repositories configured yet.");
             self.empty_label.set_visible(true);
+            self.tab_view.set_visible(false);
             self.terminal_layout_box.set_visible(false);
             self.status_label.set_text("No active repository.");
             self.window.set_title(Some("Lantern"));
             return;
         };
 
-        let Some(active_session_id) = session else {
+        let Some(tab) = tab else {
             self.close_search();
             self.clear_active_process_info();
+            clear_box_children(&self.terminal_layout_box);
             self.empty_label
                 .set_text("No open tabs. Press Ctrl+Shift+T to open a new terminal.");
             self.empty_label.set_visible(true);
+            self.tab_view.set_visible(false);
             self.terminal_layout_box.set_visible(false);
             self.status_label
                 .set_text(format!("{} • no tabs", repo.repo.path).as_str());
@@ -2916,14 +3011,29 @@ impl NativeApp {
             return;
         };
 
+        let Some(active_session_id) = tab.tab.active_session_id.clone() else {
+            self.close_search();
+            self.clear_active_process_info();
+            clear_box_children(&self.terminal_layout_box);
+            self.empty_label
+                .set_text("No open tabs. Press Ctrl+Shift+T to open a new terminal.");
+            self.empty_label.set_visible(true);
+            self.tab_view.set_visible(false);
+            self.terminal_layout_box.set_visible(false);
+            self.status_label
+                .set_text(format!("{} • no tabs", repo.repo.path).as_str());
+            self.window.set_title(Some("Lantern"));
+            return;
+        };
+
+        if self.terminal_layout_box.first_child().is_none() {
+            self.rebuild_tab_layout(repo.repo.id.as_str(), tab.tab.id.as_str());
+        }
+
         self.empty_label.set_visible(false);
+        self.tab_view.set_visible(true);
         self.terminal_layout_box.set_visible(true);
-        let split_state =
-            self.split_state_for_repo(repo.repo.id.as_str(), Some(active_session_id.as_str()));
-        self.park_surface_views();
-        let layout = self.build_terminal_layout(&repo, &split_state);
-        self.replace_terminal_layout(&layout);
-        if let Some(surface) = self.active_surface() {
+        if let Some(surface) = self.host.borrow().surface(active_session_id.as_str()) {
             surface.terminal().grab_focus();
         }
         self.refresh_active_process_info();
@@ -2978,26 +3088,30 @@ impl NativeApp {
         self.persist_layout();
     }
 
-    fn active_tab_ids(&self) -> Option<(String, String)> {
+    fn active_repo_tab_ids(&self) -> Option<(String, String)> {
         let workspace = self.workspace.borrow();
         let repo = workspace.active_repo()?;
-        let session_id = repo.active_session_id.clone()?;
-        Some((repo.repo.id.clone(), session_id))
+        let tab_id = repo.active_tab_id.clone()?;
+        Some((repo.repo.id.clone(), tab_id))
+    }
+
+    fn active_selection_ids(&self) -> Option<(String, String, String)> {
+        let workspace = self.workspace.borrow();
+        let repo = workspace.active_repo()?;
+        let tab = repo.active_tab()?;
+        let session_id = tab.tab.active_session_id.clone()?;
+        Some((repo.repo.id.clone(), tab.tab.id.clone(), session_id))
     }
 
     fn active_tab_metadata(&self) -> Option<(String, String, String)> {
         let workspace = self.workspace.borrow();
         let repo = workspace.active_repo()?;
-        let session = repo.active_session_id.as_deref().and_then(|session_id| {
-            repo.sessions
-                .iter()
-                .find(|session| session.id == session_id)
-        })?;
+        let tab = repo.active_tab()?;
 
         Some((
             repo.repo.id.clone(),
-            session.id.clone(),
-            session.title.clone(),
+            tab.tab.id.clone(),
+            tab.tab.title.clone(),
         ))
     }
 
@@ -3006,33 +3120,43 @@ impl NativeApp {
         let Some(repo) = workspace.active_repo() else {
             return;
         };
-        if !repo.sessions.is_empty() {
+        if !repo.tabs.is_empty() {
             return;
         }
 
         let repo_id = repo.repo.id.clone();
         drop(workspace);
 
-        if let Err(error) = self.create_session_for_repo(repo_id.as_str()) {
+        if let Err(error) = self.create_tab_for_repo(repo_id.as_str()) {
             self.status_label
                 .set_text(format!("Failed to create initial terminal tab: {error}").as_str());
         }
     }
 
-    fn create_session_for_repo(self: &Rc<Self>, repo_id: &str) -> Result<String, LanternError> {
-        let title = {
-            let workspace = self.workspace.borrow();
-            let repo = workspace
-                .repos
-                .iter()
-                .find(|repo| repo.repo.id == repo_id)
-                .ok_or_else(|| LanternError::RepoNotFound(repo_id.to_string()))?;
-            next_session_title(&repo.sessions)
-        };
+    fn create_tab_for_repo(
+        self: &Rc<Self>,
+        repo_id: &str,
+    ) -> Result<(String, String, String), LanternError> {
+        let title = self.next_tab_title(repo_id)?;
+        let tab = db::create_tab(&self.db, repo_id, title.as_str())?;
+        let tab_id = tab.id.clone();
+        self.workspace.borrow_mut().add_tab(tab);
 
-        let session = db::create_session(&self.db, repo_id, title.as_str(), None)?;
+        let session = db::create_session(&self.db, tab_id.as_str(), title.as_str(), None)?;
         let session_id = session.id.clone();
-        db::set_active_tab(&self.db, repo_id, session.id.as_str())?;
+        db::set_active_session(&self.db, tab_id.as_str(), session_id.as_str())?;
+        db::set_active_tab(&self.db, repo_id, tab_id.as_str())?;
+        self.workspace.borrow_mut().add_session(session);
+        Ok((tab_id, session_id, title))
+    }
+
+    fn create_session_for_tab(self: &Rc<Self>, tab_id: &str) -> Result<String, LanternError> {
+        let title = self.next_session_title_for_tab(tab_id)?;
+        let session = db::create_session(&self.db, tab_id, title.as_str(), None)?;
+        let session_id = session.id.clone();
+        let repo_id = session.repo_id.clone();
+        db::set_active_session(&self.db, tab_id, session_id.as_str())?;
+        db::set_active_tab(&self.db, repo_id.as_str(), tab_id)?;
         self.workspace.borrow_mut().add_session(session);
         Ok(session_id)
     }
@@ -3040,6 +3164,7 @@ impl NativeApp {
     fn bind_surface_events(
         self: &Rc<Self>,
         repo_id: &str,
+        tab_id: &str,
         session_id: &str,
         terminal: &vte::Terminal,
     ) {
@@ -3133,11 +3258,16 @@ impl NativeApp {
         let focus_controller = gtk::EventControllerFocus::new();
         let weak_self = Rc::downgrade(self);
         let focus_repo_id = repo_id.to_string();
+        let focus_tab_id = tab_id.to_string();
         let focus_session_id = session_id.to_string();
         focus_controller.connect_enter(move |_| {
             if let Some(native_app) = weak_self.upgrade() {
                 if !native_app.rebuilding_tabs.get() {
-                    native_app.select_session(focus_repo_id.as_str(), focus_session_id.as_str());
+                    native_app.select_session(
+                        focus_repo_id.as_str(),
+                        focus_tab_id.as_str(),
+                        focus_session_id.as_str(),
+                    );
                 }
             }
         });
@@ -3147,16 +3277,17 @@ impl NativeApp {
     fn build_terminal_layout(
         self: &Rc<Self>,
         repo: &RepoWorkspace,
+        tab_id: &str,
         split_state: &NativeSplitState,
     ) -> gtk::Widget {
         let surfaces = split_state
             .visible_session_ids
             .iter()
-            .filter_map(|session_id| self.ensure_surface(repo, session_id))
+            .filter_map(|session_id| self.ensure_surface(repo, tab_id, session_id))
             .collect::<Vec<_>>();
 
         self.build_split_widget(
-            repo.repo.id.as_str(),
+            tab_id,
             split_state.orientation,
             &split_state.divider_positions,
             surfaces.as_slice(),
@@ -3166,7 +3297,7 @@ impl NativeApp {
 
     fn build_split_widget(
         self: &Rc<Self>,
-        repo_id: &str,
+        tab_id: &str,
         orientation: NativeSplitOrientation,
         divider_positions: &[i32],
         surfaces: &[crate::terminal_host::TerminalSurface],
@@ -3181,7 +3312,7 @@ impl NativeApp {
             [first, remaining @ ..] => {
                 detach_widget_from_parent(first.view().upcast_ref());
                 let paned = gtk::Paned::new(gtk_orientation(orientation));
-                configure_fixed_start_paned(&paned, true);
+                configure_terminal_split_paned(&paned);
                 paned.set_wide_handle(true);
                 paned.set_position(divider_positions.get(divider_index).copied().unwrap_or(
                     default_split_position(orientation, self.window.width(), self.window.height()),
@@ -3189,7 +3320,7 @@ impl NativeApp {
                 paned.set_start_child(Some(first.view()));
 
                 let nested = self.build_split_widget(
-                    repo_id,
+                    tab_id,
                     orientation,
                     divider_positions,
                     remaining,
@@ -3198,14 +3329,15 @@ impl NativeApp {
                 paned.set_end_child(Some(&nested));
 
                 let weak_self = Rc::downgrade(self);
-                let repo_id = repo_id.to_string();
+                let tab_id = tab_id.to_string();
                 paned.connect_position_notify(move |paned| {
                     if let Some(native_app) = weak_self.upgrade() {
                         native_app.update_split_divider_position(
-                            repo_id.as_str(),
+                            tab_id.as_str(),
                             divider_index,
                             paned.position(),
                         );
+                        native_app.schedule_visible_terminal_size_syncs();
                     }
                 });
                 paned.upcast::<gtk::Widget>()
@@ -3213,9 +3345,42 @@ impl NativeApp {
         }
     }
 
-    fn replace_terminal_layout(&self, layout: &impl IsA<gtk::Widget>) {
+    fn rebuild_tab_layout(self: &Rc<Self>, repo_id: &str, tab_id: &str) {
+        let repo = self
+            .workspace
+            .borrow()
+            .repos
+            .iter()
+            .find(|repo| repo.repo.id == repo_id)
+            .cloned();
+        let Some(repo) = repo else {
+            return;
+        };
+        let Some(tab) = repo.tab(tab_id).cloned() else {
+            return;
+        };
+        if repo.active_tab_id.as_deref() != Some(tab_id) {
+            return;
+        }
+        let split_state = self.split_state_for_tab(tab_id, tab.tab.active_session_id.as_deref());
+        self.park_surface_views();
+        let layout = self.build_terminal_layout(&repo, tab_id, &split_state);
+        self.replace_tab_layout(tab_id, &layout);
+    }
+
+    fn replace_tab_layout(&self, tab_id: &str, layout: &impl IsA<gtk::Widget>) {
+        if self
+            .workspace
+            .borrow()
+            .active_repo()
+            .and_then(|repo| repo.active_tab_id.as_deref())
+            != Some(tab_id)
+        {
+            return;
+        }
         clear_box_children(&self.terminal_layout_box);
         self.terminal_layout_box.append(layout);
+        self.schedule_visible_terminal_size_syncs();
     }
 
     fn park_surface_views(&self) {
@@ -3228,16 +3393,21 @@ impl NativeApp {
         move_widget_to_box(surface.view().upcast_ref(), &self.surface_parking_box);
     }
 
+    fn park_tab_surface_views(&self, tab: &lantern_core::TabWorkspace) {
+        for session in &tab.sessions {
+            if let Some(surface) = self.host.borrow().surface(session.id.as_str()) {
+                self.park_surface_view(&surface);
+            }
+        }
+    }
+
     fn ensure_surface(
         self: &Rc<Self>,
         repo: &RepoWorkspace,
+        tab_id: &str,
         session_id: &str,
     ) -> Option<crate::terminal_host::TerminalSurface> {
-        let session = repo
-            .sessions
-            .iter()
-            .find(|session| session.id == session_id)?
-            .clone();
+        let session = repo.session(session_id)?.clone();
         let needs_binding = self.host.borrow().surface(session_id).is_none();
         let config = self.config.borrow();
         let surface = self
@@ -3245,21 +3415,26 @@ impl NativeApp {
             .borrow_mut()
             .ensure_surface(repo, &session, &config);
         if needs_binding {
-            self.bind_surface_events(repo.repo.id.as_str(), session_id, surface.terminal());
+            self.bind_surface_events(
+                repo.repo.id.as_str(),
+                tab_id,
+                session_id,
+                surface.terminal(),
+            );
         }
         Some(surface)
     }
 
-    fn split_state_for_repo(
+    fn split_state_for_tab(
         &self,
-        repo_id: &str,
+        tab_id: &str,
         active_session_id: Option<&str>,
     ) -> NativeSplitState {
-        let available_session_ids = self.available_session_ids(repo_id);
+        let available_session_ids = self.available_session_ids(tab_id);
         let current_split_state = self
-            .repo_split_state
+            .tab_split_state
             .borrow()
-            .get(repo_id)
+            .get(tab_id)
             .cloned()
             .unwrap_or_default();
         let normalized_split_state = normalize_split_state(
@@ -3270,23 +3445,23 @@ impl NativeApp {
         let should_persist = normalized_split_state != current_split_state
             || (normalized_split_state.visible_session_ids.len() <= 1
                 && !current_split_state.visible_session_ids.is_empty());
-        self.repo_split_state
+        self.tab_split_state
             .borrow_mut()
-            .insert(repo_id.to_string(), normalized_split_state.clone());
+            .insert(tab_id.to_string(), normalized_split_state.clone());
         if should_persist {
-            self.persist_split_state(repo_id, &normalized_split_state);
+            self.persist_split_state(tab_id, &normalized_split_state);
         }
         normalized_split_state
     }
 
-    fn available_session_ids(&self, repo_id: &str) -> Vec<String> {
+    fn available_session_ids(&self, tab_id: &str) -> Vec<String> {
         self.workspace
             .borrow()
             .repos
             .iter()
-            .find(|repo| repo.repo.id == repo_id)
-            .map(|repo| {
-                repo.sessions
+            .find_map(|repo| repo.tab(tab_id))
+            .map(|tab| {
+                tab.sessions
                     .iter()
                     .map(|session| session.id.clone())
                     .collect()
@@ -3296,92 +3471,43 @@ impl NativeApp {
 
     fn set_split_state(
         &self,
-        repo_id: &str,
+        tab_id: &str,
         split_state: NativeSplitState,
         active_session_id: Option<&str>,
     ) {
-        let available_session_ids = self.available_session_ids(repo_id);
+        let available_session_ids = self.available_session_ids(tab_id);
         let normalized_split_state =
             normalize_split_state(&split_state, &available_session_ids, active_session_id);
         if normalized_split_state.visible_session_ids.is_empty() {
-            self.repo_split_state.borrow_mut().remove(repo_id);
-            self.persist_split_state(repo_id, &normalized_split_state);
+            self.tab_split_state.borrow_mut().remove(tab_id);
+            self.persist_split_state(tab_id, &normalized_split_state);
             return;
         }
-        self.repo_split_state
+        self.tab_split_state
             .borrow_mut()
-            .insert(repo_id.to_string(), normalized_split_state.clone());
-        self.persist_split_state(repo_id, &normalized_split_state);
+            .insert(tab_id.to_string(), normalized_split_state.clone());
+        self.persist_split_state(tab_id, &normalized_split_state);
     }
 
-    fn sync_visible_sessions_after_selection(
-        &self,
-        repo_id: &str,
-        previous_active_session_id: Option<&str>,
-        new_active_session_id: &str,
-    ) {
-        let split_state = self.split_state_for_repo(
-            repo_id,
-            previous_active_session_id.or(Some(new_active_session_id)),
-        );
-        let updated_visible_sessions = apply_active_session_change(
-            &split_state.visible_session_ids,
-            previous_active_session_id,
-            new_active_session_id,
-        );
-        self.set_split_state(
-            repo_id,
-            NativeSplitState {
-                visible_session_ids: updated_visible_sessions,
-                orientation: split_state.orientation,
-                divider_positions: split_state.divider_positions,
-            },
-            Some(new_active_session_id),
-        );
-    }
-
-    fn remove_closed_session_from_visible_state(
-        &self,
-        repo_id: &str,
-        removed_session_id: &str,
-        fallback_active_session_id: Option<&str>,
-    ) {
-        let split_state = self.split_state_for_repo(repo_id, fallback_active_session_id);
-        let updated_visible_sessions = remove_visible_session(
-            &split_state.visible_session_ids,
-            removed_session_id,
-            fallback_active_session_id,
-        );
-        self.set_split_state(
-            repo_id,
-            NativeSplitState {
-                visible_session_ids: updated_visible_sessions,
-                orientation: split_state.orientation,
-                divider_positions: split_state.divider_positions,
-            },
-            fallback_active_session_id,
-        );
-    }
-
-    fn persist_split_state(&self, repo_id: &str, split_state: &NativeSplitState) {
+    fn persist_split_state(&self, tab_id: &str, split_state: &NativeSplitState) {
         let result = if split_state.visible_session_ids.len() > 1 {
-            db::save_native_split_state(&self.db, repo_id, split_state)
+            db::save_native_split_state(&self.db, tab_id, split_state)
         } else {
-            db::delete_native_split_state(&self.db, repo_id)
+            db::delete_native_split_state(&self.db, tab_id)
         };
 
         if let Err(error) = result {
-            eprintln!("Failed to persist native split state for {repo_id}: {error}");
+            eprintln!("Failed to persist native split state for {tab_id}: {error}");
         }
     }
 
     fn update_split_divider_position(
         &self,
-        repo_id: &str,
+        tab_id: &str,
         divider_index: usize,
         divider_position: i32,
     ) {
-        let Some(current_split_state) = self.repo_split_state.borrow().get(repo_id).cloned() else {
+        let Some(current_split_state) = self.tab_split_state.borrow().get(tab_id).cloned() else {
             return;
         };
         let divider_count = current_split_state
@@ -3407,16 +3533,16 @@ impl NativeApp {
             divider_positions,
             ..current_split_state
         };
-        self.repo_split_state
+        self.tab_split_state
             .borrow_mut()
-            .insert(repo_id.to_string(), updated_split_state.clone());
-        self.persist_split_state(repo_id, &updated_split_state);
+            .insert(tab_id.to_string(), updated_split_state.clone());
+        self.persist_split_state(tab_id, &updated_split_state);
     }
 
     fn refresh_terminal_chrome_for_session(&self, session_id: &str) {
         let is_active = matches!(
-            self.active_tab_ids(),
-            Some((_, active_session_id)) if active_session_id == session_id
+            self.active_selection_ids(),
+            Some((_, _, active_session_id)) if active_session_id == session_id
         );
         if is_active {
             self.refresh_active_terminal_chrome();
@@ -3455,7 +3581,7 @@ impl NativeApp {
     }
 
     fn refresh_active_terminal_chrome(&self) {
-        let Some((repo_id, session_id)) = self.active_tab_ids() else {
+        let Some((repo_id, _, session_id)) = self.active_selection_ids() else {
             self.status_label.set_text("No active repository.");
             self.window.set_title(Some("Lantern"));
             return;
@@ -3507,8 +3633,39 @@ impl NativeApp {
     }
 
     fn active_surface(&self) -> Option<crate::terminal_host::TerminalSurface> {
-        let (_, session_id) = self.active_tab_ids()?;
+        let (_, _, session_id) = self.active_selection_ids()?;
         self.host.borrow().surface(session_id.as_str())
+    }
+
+    fn schedule_visible_terminal_size_syncs(&self) {
+        self.terminal_layout_box.queue_resize();
+        for surface in self.host.borrow().surfaces() {
+            if surface.view().is_mapped() {
+                surface.view().queue_resize();
+                surface.terminal().queue_resize();
+            }
+        }
+        if native_terminal_layout_debug_enabled() {
+            self.log_terminal_layout_debug();
+        }
+    }
+
+    fn log_terminal_layout_debug(&self) {
+        let split_width = self.split.allocated_width();
+        let sidebar_width = self.sidebar_box.allocated_width();
+        let terminal_layout_width = self.terminal_layout_box.allocated_width();
+        let active_view_width = self
+            .active_surface()
+            .map(|surface| surface.view().allocated_width())
+            .unwrap_or_default();
+        let active_terminal_width = self
+            .active_surface()
+            .map(|surface| surface.terminal().allocated_width())
+            .unwrap_or_default();
+        eprintln!(
+            "lantern layout: split={split_width}px sidebar_visible={} sidebar={sidebar_width}px terminal_box={terminal_layout_width}px view={active_view_width}px terminal={active_terminal_width}px",
+            self.sidebar_box.is_visible()
+        );
     }
 
     fn open_search(&self) {
@@ -3724,23 +3881,19 @@ fn sidebar_groups(repos: &[RepoWorkspace]) -> Vec<SidebarRepoGroup> {
     groups
 }
 
-fn reordered_repo_ids_for_group_drop(
+fn reordered_repo_ids_for_group_move(
     groups: &[SidebarRepoGroup],
-    source_group_id: &str,
-    target_group_id: &str,
+    group_id: &str,
+    direction: isize,
 ) -> Option<Vec<String>> {
-    let source_index = groups
-        .iter()
-        .position(|group| group.group_id == source_group_id)?;
-    let target_index = groups
-        .iter()
-        .position(|group| group.group_id == target_group_id)?;
-    if source_index == target_index {
+    let current_index = groups.iter().position(|group| group.group_id == group_id)?;
+    let target_index = current_index.checked_add_signed(direction)?;
+    if target_index >= groups.len() {
         return None;
     }
 
     let mut reordered_groups = groups.to_vec();
-    let moved_group = reordered_groups.remove(source_index);
+    let moved_group = reordered_groups.remove(current_index);
     reordered_groups.insert(target_index, moved_group);
 
     Some(
@@ -3889,19 +4042,13 @@ fn configure_fixed_start_paned(paned: &gtk::Paned, shrink_start_child: bool) {
     paned.set_shrink_end_child(true);
 }
 
-fn apply_active_session_change(
-    visible_sessions: &[String],
-    _previous_active_session_id: Option<&str>,
-    new_active_session_id: &str,
-) -> Vec<String> {
-    if visible_sessions
-        .iter()
-        .any(|session_id| session_id == new_active_session_id)
-    {
-        return visible_sessions.to_vec();
-    }
-
-    vec![new_active_session_id.to_string()]
+fn configure_terminal_split_paned(paned: &gtk::Paned) {
+    paned.set_hexpand(true);
+    paned.set_vexpand(true);
+    paned.set_resize_start_child(true);
+    paned.set_resize_end_child(true);
+    paned.set_shrink_start_child(true);
+    paned.set_shrink_end_child(true);
 }
 
 fn append_split_session(visible_sessions: &[String], new_session_id: &str) -> Vec<String> {
@@ -3973,6 +4120,16 @@ fn next_session_title(existing_sessions: &[lantern_core::TerminalSession]) -> St
     let max_n = existing_sessions
         .iter()
         .filter_map(|s| s.title.strip_prefix("Terminal "))
+        .filter_map(|n| n.parse::<usize>().ok())
+        .max()
+        .unwrap_or(0);
+    format!("Terminal {}", max_n + 1)
+}
+
+fn next_tab_title(existing_tabs: &[lantern_core::TabWorkspace]) -> String {
+    let max_n = existing_tabs
+        .iter()
+        .filter_map(|tab| tab.tab.title.strip_prefix("Terminal "))
         .filter_map(|n| n.parse::<usize>().ok())
         .max()
         .unwrap_or(0);
@@ -4059,6 +4216,10 @@ fn terminal_dimensions(terminal: &vte::Terminal) -> Option<String> {
     Some(format!("{columns}x{rows}"))
 }
 
+fn native_terminal_layout_debug_enabled() -> bool {
+    std::env::var_os("LANTERN_TERMINAL_DEBUG").is_some()
+}
+
 fn launch_failure_status(working_directory: &str, error: &str) -> String {
     format!("{working_directory} • failed to start shell: {error}")
 }
@@ -4142,19 +4303,21 @@ fn labeled_spin_button(
     spin_button
 }
 
-fn session_id_for_tab_page(page: &adw::TabPage) -> Option<String> {
-    let name = page.child().widget_name();
-    if name.is_empty() {
+fn tab_id_for_tab_page(page: &panel::Widget) -> Option<String> {
+    let id = page.id();
+    if id.is_empty() {
         None
     } else {
-        Some(name.to_string())
+        Some(id.to_string())
     }
 }
 
-fn find_tab_page_for_session(tab_view: &adw::TabView, session_id: &str) -> Option<adw::TabPage> {
-    for i in 0..tab_view.n_pages() {
-        let page = tab_view.nth_page(i);
-        if page.child().widget_name() == session_id {
+fn find_tab_page_for_tab(tab_view: &panel::Frame, tab_id: &str) -> Option<panel::Widget> {
+    for index in 0..tab_view.n_pages() {
+        let Some(page) = tab_view.page(index) else {
+            continue;
+        };
+        if page.id() == tab_id {
             return Some(page);
         }
     }
@@ -4234,6 +4397,7 @@ mod tests {
         let make = |title: &str| TerminalSession {
             id: String::new(),
             repo_id: String::new(),
+            tab_id: String::new(),
             title: title.to_string(),
             shell: None,
             sort_order: 0,
@@ -4244,14 +4408,8 @@ mod tests {
             next_session_title(&[make("Terminal 1"), make("Terminal 3")]),
             "Terminal 4"
         );
-        assert_eq!(
-            next_session_title(&[make("Terminal 2")]),
-            "Terminal 3"
-        );
-        assert_eq!(
-            next_session_title(&[make("custom name")]),
-            "Terminal 1"
-        );
+        assert_eq!(next_session_title(&[make("Terminal 2")]), "Terminal 3");
+        assert_eq!(next_session_title(&[make("custom name")]), "Terminal 1");
     }
 
     #[test]
@@ -4392,7 +4550,9 @@ mod tests {
     }
 
     #[gtk::test]
-    fn fixed_start_paned_keeps_terminal_content_within_remaining_width() {
+    fn fixed_start_paned_keeps_panel_terminal_content_within_remaining_width() {
+        panel::init();
+
         let window = gtk::Window::builder()
             .default_width(900)
             .default_height(600)
@@ -4407,22 +4567,28 @@ mod tests {
         let sidebar_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
         sidebar_box.append(&sidebar_scroll);
 
-        let tab_view = adw::TabView::new();
+        let tab_view = panel::Frame::new();
         tab_view.set_hexpand(true);
-        tab_view.set_vexpand(true);
+        tab_view.set_vexpand(false);
+        let tab_header = panel::FrameTabBar::new();
+        tab_header.set_autohide(false);
+        tab_header.set_expand_tabs(false);
+        tab_view.set_header(Some(&tab_header));
 
-        let tab_bar = adw::TabBar::new();
-        tab_bar.set_view(Some(&tab_view));
-        tab_bar.set_autohide(false);
-        tab_bar.set_expand_tabs(false);
-        tab_bar.set_hexpand(true);
-        tab_bar.add_css_class("inline");
+        let page_content = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        let page = panel::Widget::new();
+        page.set_id("tab-1");
+        page.set_title(Some(
+            "Terminal 1 with a deliberately long tab title that must not widen content",
+        ));
+        page.set_kind(Some(panel::WIDGET_KIND_DOCUMENT));
+        page.set_child(Some(&page_content));
+        tab_view.add(&page);
+        tab_view.set_visible_child(&page);
 
-        let wrapper = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        wrapper.set_hexpand(true);
-        wrapper.set_vexpand(true);
-        let page = tab_view.append(&wrapper);
-        page.set_title("Terminal 1");
+        let terminal_layout_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        terminal_layout_box.set_hexpand(true);
+        terminal_layout_box.set_vexpand(true);
 
         let terminal = vte::Terminal::new();
         terminal.set_hexpand(true);
@@ -4436,13 +4602,26 @@ mod tests {
             .build();
         view.set_propagate_natural_width(false);
         view.set_propagate_natural_height(false);
-        wrapper.append(&view);
+        terminal_layout_box.append(&view);
 
         let content_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
         content_box.set_hexpand(true);
         content_box.set_vexpand(true);
-        content_box.append(&tab_bar);
         content_box.append(&tab_view);
+        content_box.append(&terminal_layout_box);
+
+        let status_box = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        let status_label = gtk::Label::new(Some(
+            "/home/y2ktheory/pomkatsu/seedbook • y2ktheory@Ocean:~/pomkatsu/seedbook • VQ6B1EUZqoCUO4zoRU --change-stack-guard-on-fork=enable --ozone-platform=wayland --lang=en-US --num-raster-threads=4",
+        ));
+        status_label.set_xalign(0.0);
+        status_label.set_hexpand(true);
+        status_label.set_single_line_mode(true);
+        status_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        status_label.set_width_chars(1);
+        status_label.set_max_width_chars(1);
+        status_box.append(&status_label);
+        content_box.append(&status_box);
 
         let split = gtk::Paned::new(gtk::Orientation::Horizontal);
         configure_fixed_start_paned(&split, false);
@@ -4467,8 +4646,11 @@ mod tests {
             content_box.allocated_width(),
             split.allocated_width() - split.position() - handle_width
         );
-        assert_eq!(tab_bar.allocated_width(), content_box.allocated_width());
         assert_eq!(tab_view.allocated_width(), content_box.allocated_width());
+        assert_eq!(
+            terminal_layout_box.allocated_width(),
+            content_box.allocated_width()
+        );
         assert_eq!(view.allocated_width(), content_box.allocated_width());
         assert!(terminal.allocated_width() <= view.allocated_width());
 
@@ -4476,39 +4658,14 @@ mod tests {
     }
 
     #[gtk::test]
-    fn tab_bar_uses_overflow_in_narrow_windows() {
-        let window = gtk::Window::builder()
-            .default_width(480)
-            .default_height(320)
-            .build();
+    fn terminal_split_paned_allows_both_children_to_shrink() {
+        let paned = gtk::Paned::new(gtk::Orientation::Horizontal);
+        configure_terminal_split_paned(&paned);
 
-        let tab_view = adw::TabView::new();
-        let tab_bar = adw::TabBar::new();
-        tab_bar.set_view(Some(&tab_view));
-        tab_bar.set_autohide(false);
-        tab_bar.set_expand_tabs(false);
-        tab_bar.set_hexpand(true);
-        tab_bar.add_css_class("inline");
-
-        for index in 1..=8 {
-            let page = tab_view.append(&gtk::Box::new(gtk::Orientation::Vertical, 0));
-            page.set_title(&format!("Terminal {index}"));
-        }
-
-        let content_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        content_box.set_hexpand(true);
-        content_box.append(&tab_bar);
-
-        window.set_child(Some(&content_box));
-        window.present();
-        flush_gtk_events();
-
-        assert!(!tab_bar.expands_tabs());
-        assert!(tab_bar.is_overflowing());
-        assert_eq!(tab_bar.allocated_width(), content_box.allocated_width());
-        assert!(window.allocated_width() <= 480);
-
-        window.close();
+        assert!(paned.resizes_start_child());
+        assert!(paned.resizes_end_child());
+        assert!(paned.shrinks_start_child());
+        assert!(paned.shrinks_end_child());
     }
 
     #[test]
@@ -4608,18 +4765,6 @@ mod tests {
                 orientation: NativeSplitOrientation::Horizontal,
                 divider_positions: vec![500, 320],
             }
-        );
-    }
-
-    #[test]
-    fn apply_active_session_change_collapses_split_for_new_session() {
-        assert_eq!(
-            apply_active_session_change(
-                &["tab-1".to_string(), "tab-2".to_string()],
-                Some("tab-2"),
-                "tab-3",
-            ),
-            vec!["tab-3".to_string()]
         );
     }
 
@@ -4752,8 +4897,8 @@ mod tests {
                     group_id: Some("group-1".to_string()),
                     is_default: true,
                 },
-                sessions: Vec::new(),
-                active_session_id: None,
+                tabs: Vec::new(),
+                active_tab_id: None,
             },
             RepoWorkspace {
                 repo: lantern_core::Repo {
@@ -4764,8 +4909,8 @@ mod tests {
                     group_id: Some("group-1".to_string()),
                     is_default: false,
                 },
-                sessions: Vec::new(),
-                active_session_id: None,
+                tabs: Vec::new(),
+                active_tab_id: None,
             },
             RepoWorkspace {
                 repo: lantern_core::Repo {
@@ -4776,8 +4921,8 @@ mod tests {
                     group_id: None,
                     is_default: false,
                 },
-                sessions: Vec::new(),
-                active_session_id: None,
+                tabs: Vec::new(),
+                active_tab_id: None,
             },
         ]);
 
@@ -4885,72 +5030,59 @@ mod tests {
     }
 
     #[test]
-    fn reordered_repo_ids_for_group_drop_moves_group_to_target_position() {
-        let groups = vec![
-            SidebarRepoGroup {
-                group_id: "a".to_string(),
-                name: "a".to_string(),
-                repos: vec![RepoWorkspace {
-                    repo: lantern_core::Repo {
-                        id: "repo-a".to_string(),
-                        name: "a".to_string(),
-                        path: "/tmp/a".to_string(),
-                        sort_order: 0,
-                        group_id: None,
-                        is_default: false,
-                    },
-                    sessions: Vec::new(),
-                    active_session_id: None,
-                }],
-                is_worktree_group: false,
+    fn reordered_repo_ids_for_group_move_moves_group_as_a_block() {
+        let groups = sidebar_groups(&[
+            RepoWorkspace {
+                repo: lantern_core::Repo {
+                    id: "repo-1".to_string(),
+                    name: "repo-1".to_string(),
+                    path: "/tmp/repo-1".to_string(),
+                    sort_order: 0,
+                    group_id: None,
+                    is_default: false,
+                },
+                tabs: Vec::new(),
+                active_tab_id: None,
             },
-            SidebarRepoGroup {
-                group_id: "b".to_string(),
-                name: "b".to_string(),
-                repos: vec![RepoWorkspace {
-                    repo: lantern_core::Repo {
-                        id: "repo-b".to_string(),
-                        name: "b".to_string(),
-                        path: "/tmp/b".to_string(),
-                        sort_order: 1,
-                        group_id: None,
-                        is_default: false,
-                    },
-                    sessions: Vec::new(),
-                    active_session_id: None,
-                }],
-                is_worktree_group: false,
+            RepoWorkspace {
+                repo: lantern_core::Repo {
+                    id: "main".to_string(),
+                    name: "main".to_string(),
+                    path: "/tmp/main".to_string(),
+                    sort_order: 1,
+                    group_id: Some("group-1".to_string()),
+                    is_default: true,
+                },
+                tabs: Vec::new(),
+                active_tab_id: None,
             },
-            SidebarRepoGroup {
-                group_id: "c".to_string(),
-                name: "c".to_string(),
-                repos: vec![RepoWorkspace {
-                    repo: lantern_core::Repo {
-                        id: "repo-c".to_string(),
-                        name: "c".to_string(),
-                        path: "/tmp/c".to_string(),
-                        sort_order: 2,
-                        group_id: None,
-                        is_default: false,
-                    },
-                    sessions: Vec::new(),
-                    active_session_id: None,
-                }],
-                is_worktree_group: false,
+            RepoWorkspace {
+                repo: lantern_core::Repo {
+                    id: "feature".to_string(),
+                    name: "feature".to_string(),
+                    path: "/tmp/feature".to_string(),
+                    sort_order: 2,
+                    group_id: Some("group-1".to_string()),
+                    is_default: false,
+                },
+                tabs: Vec::new(),
+                active_tab_id: None,
             },
-        ];
+        ]);
 
-        // Drag first group down to third
-        let result = reordered_repo_ids_for_group_drop(&groups, "a", "c").unwrap();
-        assert_eq!(result, vec!["repo-b", "repo-c", "repo-a"]);
-
-        // Drag third group up to first
-        let result = reordered_repo_ids_for_group_drop(&groups, "c", "a").unwrap();
-        assert_eq!(result, vec!["repo-c", "repo-a", "repo-b"]);
+        let reordered_repo_ids = reordered_repo_ids_for_group_move(&groups, "group-1", -1).unwrap();
+        assert_eq!(
+            reordered_repo_ids,
+            vec![
+                "main".to_string(),
+                "feature".to_string(),
+                "repo-1".to_string(),
+            ]
+        );
     }
 
     #[test]
-    fn reordered_repo_ids_for_group_drop_returns_none_for_same_position() {
+    fn reordered_repo_ids_for_group_move_returns_none_at_edges() {
         let groups = vec![SidebarRepoGroup {
             group_id: "only".to_string(),
             name: "only".to_string(),
@@ -4958,10 +5090,7 @@ mod tests {
             is_worktree_group: false,
         }];
 
-        assert_eq!(
-            reordered_repo_ids_for_group_drop(&groups, "only", "only"),
-            None
-        );
+        assert_eq!(reordered_repo_ids_for_group_move(&groups, "only", -1), None);
     }
 
     #[test]

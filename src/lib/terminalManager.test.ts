@@ -160,7 +160,7 @@ describe("terminalManager", () => {
     expect(Array.from(mockTerminalWrite.mock.calls[1][1] as Uint8Array)).toEqual([13]);
   });
 
-  it("renders predictive echo for direct shell prompt typing", async () => {
+  it("does not render predictive echo for direct shell prompt typing", async () => {
     mockTerminalGetForegroundProcess.mockResolvedValue({
       name: "bash",
       is_agent: false,
@@ -182,15 +182,11 @@ describe("terminalManager", () => {
 
     expect(terminal.registerDecoration).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(61);
-    expect(terminal.registerDecoration).toHaveBeenCalledTimes(1);
-    expect(terminal.registerDecoration.mock.calls[0][0]).toMatchObject({
-      x: 0,
-      width: 2,
-    });
+    expect(terminal.registerDecoration).not.toHaveBeenCalled();
     expect(mockTerminalWrite).toHaveBeenCalledTimes(1);
   });
 
-  it("shrinks predictive echo on end-of-line backspace", async () => {
+  it("does not create shell predictive echo before backspace", async () => {
     mockTerminalGetForegroundProcess.mockResolvedValue({
       name: "zsh",
       is_agent: false,
@@ -213,14 +209,10 @@ describe("terminalManager", () => {
     onData("\u007f");
     await vi.advanceTimersByTimeAsync(20);
 
-    expect(terminal.registerDecoration).toHaveBeenCalledTimes(2);
-    expect(terminal.registerDecoration.mock.calls[1][0]).toMatchObject({
-      x: 0,
-      width: 1,
-    });
+    expect(terminal.registerDecoration).not.toHaveBeenCalled();
   });
 
-  it("clears predictive echo before backend output is written", async () => {
+  it("writes backend shell output without a predictive overlay", async () => {
     mockTerminalGetForegroundProcess.mockResolvedValue({
       name: "fish",
       is_agent: false,
@@ -241,11 +233,10 @@ describe("terminalManager", () => {
 
     onData("a");
     await vi.advanceTimersByTimeAsync(61);
-    const decoration = terminal.registerDecoration.mock.results[0].value;
 
     onOutput({ kind: "Data", data: "a" });
 
-    expect(decoration.dispose).toHaveBeenCalledTimes(1);
+    expect(terminal.registerDecoration).not.toHaveBeenCalled();
     expect(terminal.write.mock.calls[0][0]).toBe("a");
   });
 
@@ -328,7 +319,7 @@ describe("terminalManager", () => {
     );
   });
 
-  it("renders predictive echo with cursor not at bottom row", async () => {
+  it("does not render shell predictive echo with cursor not at bottom row", async () => {
     mockTerminalGetForegroundProcess.mockResolvedValue({
       name: "bash",
       is_agent: false,
@@ -352,11 +343,7 @@ describe("terminalManager", () => {
     onData("a");
 
     await vi.advanceTimersByTimeAsync(61);
-    expect(terminal.registerDecoration).toHaveBeenCalledTimes(1);
-    expect(terminal.registerDecoration.mock.calls[0][0]).toMatchObject({
-      x: 0,
-      width: 1,
-    });
+    expect(terminal.registerDecoration).not.toHaveBeenCalled();
   });
 
   it("does not predict when scrolled up from bottom", async () => {
@@ -392,7 +379,7 @@ describe("terminalManager", () => {
     terminal.buffer.active.viewportY = 0;
   });
 
-  it("predicts optimistically before first foreground process poll completes", async () => {
+  it("does not predict before first foreground process poll completes", async () => {
     // Don't let the poll resolve — keep it pending
     mockTerminalGetForegroundProcess.mockReturnValue(new Promise(() => {}));
 
@@ -408,13 +395,8 @@ describe("terminalManager", () => {
     const { onData } = getTerminalCallbacks();
     onData("a");
 
-    // Should predict even though foreground process is unknown
     await vi.advanceTimersByTimeAsync(61);
-    expect(terminal.registerDecoration).toHaveBeenCalledTimes(1);
-    expect(terminal.registerDecoration.mock.calls[0][0]).toMatchObject({
-      x: 0,
-      width: 1,
-    });
+    expect(terminal.registerDecoration).not.toHaveBeenCalled();
   });
 
   it("disables prediction after poll returns non-shell process", async () => {

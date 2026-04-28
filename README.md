@@ -12,6 +12,7 @@ Requirements for the native Linux app:
 - `pkg-config`
 - `libadwaita-1-dev`
 - `libgtk-4-dev`
+- `libpanel-dev`
 - `libsoup-3.0-dev`
 - `libvte-2.91-gtk4-dev`
 
