@@ -1,0 +1,59 @@
+# Enforces ~/.config/worktree-setup/PR_FORMAT.md on every pull request.
+# Self-contained: no third-party actions, no secrets, no network.
+name: PR format
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  format:
+    name: title & body
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check PR title and body
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+          BODY: ${{ github.event.pull_request.body }}
+          DRAFT: ${{ github.event.pull_request.draft }}
+        run: |
+          set -uo pipefail
+          fail=0
+          err() { printf '::error::%s\n' "$*"; fail=1; }
+
+          # ── title ──────────────────────────────────────────────────────
+          re='^(feat|fix|perf|refactor|style|docs|test|build|ci|chore|revert)(\([a-z0-9._/-]+\))?!?: [a-z].*[^.]$'
+          if [[ ! $TITLE =~ $re ]]; then
+            err "Title must be '<type>(<scope>): <summary>' — imperative, lowercase first word, no trailing period."
+            err "  types: feat fix perf refactor style docs test build ci chore revert"
+            err "  got:   $TITLE"
+          fi
+          if (( ${#TITLE} > 72 )); then
+            err "Title is ${#TITLE} characters (max 72)."
+          fi
+
+          # ── body ───────────────────────────────────────────────────────
+          if [[ -z ${BODY// /} ]]; then
+            err "PR body is empty. Use the template: .github/PULL_REQUEST_TEMPLATE.md"
+          else
+            for section in "## Summary" "## Testing"; do
+              grep -qF "$section" <<< "$BODY" || err "Missing required section: $section"
+            done
+            # A section that is present but hollow is worse than an absent one.
+            summary=$(awk '/^## Summary/{f=1;next} /^## /{f=0} f' <<< "$BODY" | sed 's/<!--.*-->//' | tr -d '[:space:]')
+            (( ${#summary} < 30 )) && err "## Summary is empty or too short — two or three sentences on what changed and why."
+            testing=$(awk '/^## Testing/{f=1;next} /^## /{f=0} f' <<< "$BODY" | sed 's/<!--.*-->//; s/^[-* ]*//' | tr -d '[:space:]')
+            (( ${#testing} < 10 )) && err "## Testing is empty — name the commands you ran and what they returned."
+            grep -qF 'N/A' <<< "$BODY" && err "Delete sections that do not apply rather than filling them with N/A."
+            grep -qE '^\s*-\s*<scope>:\s*$' <<< "$BODY" && err "Unfilled template placeholder left in ## Changes."
+          fi
+
+          if (( fail )); then
+            echo "::notice::Spec: PR_FORMAT.md — <type>(<scope>): <summary>, body sections Summary / Changes / Testing / Screenshots / Risk & Rollout / Linked"
+            exit 1
+          fi
+          echo "PR format OK: $TITLE"

@@ -1,0 +1,21 @@
+# Orca project defaults — https://www.onorca.dev/docs/model/worktrees
+scripts:
+  setup: bash "$HOME/.config/worktree-setup/setup.sh"
+  archive: bash "$HOME/.config/worktree-setup/archive.sh"
+
+# Let deps finish installing before the agent's first command runs.
+setupAgentStartupPolicy: wait-for-setup
+
+defaultTabs:
+  - title: dev
+    color: "#22c55e"
+    command: ". .orca/ports.env 2>/dev/null; npm run dev -- --port $PORT --strictPort"
+  - title: shell
+
+# Sharing node_modules across worktrees is fast, but one branch with
+# different deps corrupts every sibling worktree. Off on purpose:
+# pnpm and bun already share a global content-addressed store, so a
+# per-worktree install is nearly free. Uncomment only for caches.
+# worktree:
+#   sharedDirectories:
+#     - .turbo
