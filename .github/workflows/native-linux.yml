@@ -22,7 +22,8 @@ jobs:
             libgtk-4-dev \
             libpanel-dev \
             libsoup-3.0-dev \
-            libvte-2.91-gtk4-dev
+            libvte-2.91-gtk4-dev \
+            xvfb
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -49,7 +50,7 @@ jobs:
         run: cargo test -p lantern-core
 
       - name: Run native Linux tests
-        run: cargo test -p lantern-native-linux
+        run: xvfb-run -a cargo test -p lantern-native-linux
 
       - name: Package native Linux bundle
         run: npm run native:package
